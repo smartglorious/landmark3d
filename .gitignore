@@ -1,0 +1,24 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Project data: downloaded / user-supplied photos (third-party licences), satellite imagery (Esri terms),
+# Blender files and GLB outputs. Never commit these.
+projects/
+
+# Images in reports are made from the photos and satellite imagery above
+reports/**/*.jpg
+reports/**/*.jpeg
+reports/**/*.png
+reports/**/*.webp
+
+# Local settings / secrets (the tool keeps settings in ~/.landmark3d, outside the repo)
+.env
+*.blend
+*.blend1
+*.glb

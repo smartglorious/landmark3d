@@ -1,0 +1,948 @@
+"""Phase functions, input gate, spec builder and the run-until-blocked runner."""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import time
+import traceback
+
+from . import doctor, geom, settings as settings_mod, spec as spec_mod
+from .engine import runner as engine_runner
+from .project import PHASES, Project
+from .research import agent, ai
+
+# Which phase a change request on an approval sends the project back to.
+REWIND = {"sources_review": "research", "spec_review": "spec", "build_review": "spec", "release_review": "build"}
+
+COLOR_NAMES = {"red": (170, 50, 40), "dark red": (120, 30, 25), "brown": (120, 80, 50), "yellow": (232, 196, 104),
+               "cream": (236, 226, 196), "white": (238, 236, 230), "grey": (150, 150, 150), "gray": (150, 150, 150),
+               "black": (40, 40, 40), "green": (70, 120, 80), "blue": (70, 100, 150), "beige": (220, 205, 170),
+               "orange": (210, 120, 60), "terracotta": (190, 90, 60), "gold": (200, 160, 60), "pink": (220, 160, 160)}
+
+
+def parse_colour(v):
+    if isinstance(v, list) and len(v) == 3:
+        return [int(x) for x in v]
+    s = str(v or "").strip().lower()
+    m = re.match(r"#?([0-9a-f]{6})$", s)
+    if m:
+        h = m.group(1)
+        return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+    for k in sorted(COLOR_NAMES, key=len, reverse=True):
+        if k in s:
+            return list(COLOR_NAMES[k])
+    return None
+
+
+# ----------------------------------------------------------------------------- facts helpers
+def merged_facts(prj: Project) -> dict:
+    facts = dict(prj.read_json("input/research.json", {}).get("facts", {}))
+    for k, v in prj.state().get("user_inputs", {}).items():
+        if v not in (None, ""):
+            facts[k] = {"value": v, "confidence": "high", "source": "user", "method": "user_input"}
+    return facts
+
+
+def fval(facts, key, cast=float):
+    v = facts.get(key, {}).get("value")
+    if v is None:
+        return None
+    try:
+        return cast(v)
+    except (TypeError, ValueError):
+        return None
+
+
+# ----------------------------------------------------------------------------- input gate
+def missing_items(prj: Project) -> list[dict]:
+    st = prj.state()
+    facts = merged_facts(prj)
+    items = []
+    if st.get("lat") is None:
+        items.append({"id": "latlon", "kind": "latlon", "label": "Location (latitude, longitude)",
+                      "help": "Geocoding found nothing. Enter coordinates, e.g. 10.7725, 106.6980."})
+    fp = prj.read_json("input/geo/footprint.geojson")
+    if fp is None:
+        items.append({"id": "footprint", "kind": "footprint", "label": "Building footprint",
+                      "help": "No OSM building whose name matches the landmark was found. Enter its OSM way/relation "
+                              "id (e.g. way/39514795)."})
+    else:
+        props = fp["features"][0]["properties"]
+        score = float(props.get("l3d_match_score", 1.0))
+        if score < 0.5 and st.get("user_inputs", {}).get("footprint_confirmed") != "yes":
+            nm = props.get("name") or "(unnamed building)"
+            items.append({"id": "footprint_confirmed", "kind": "select", "options": ["yes", "no"], "default": "no",
+                          "label": f"Is OSM {props.get('osm_type')}/{props.get('osm_id')} \"{nm}\" the landmark?",
+                          "help": "It was chosen by position only (its name does not match). Answer 'no' to enter "
+                                  "the correct OSM id."})
+    has_height = any(fval(facts, k) for k in ("main_wall_height_m", "levels", "total_height_m"))
+    if not has_height:
+        items.append({"id": "main_wall_height_m", "kind": "number", "unit": "m",
+                      "label": "Main wall height (eaves) in metres",
+                      "help": "No height found in OSM, Wikidata or web research."})
+    if not facts.get("roof_form"):
+        items.append({"id": "roof_form", "kind": "select", "options": spec_mod.ROOF_TYPES, "default": "hip",
+                      "label": "Main roof form", "help": "Not found in sources. Pick the closest form."})
+    photos = [s for s in prj.read_json("input/sources.json", {"sources": []})["sources"] if s.get("kind") == "photo"]
+    if not photos:
+        items.append({"id": "photos", "kind": "files", "label": "Reference photos",
+                      "help": "No licensed photos found. Upload at least one photo (front view preferred) and state "
+                              "the licence or your permission."})
+    return items
+
+
+# ----------------------------------------------------------------------------- spec builder
+def build_spec(prj: Project) -> dict:
+    st = prj.state()
+    main, origin = agent.load_footprint(prj)
+    if main is None:
+        raise RuntimeError("no footprint")
+    facts = merged_facts(prj)
+    prov, defaults_used = {}, []
+
+    def note_default(key, value):
+        defaults_used.append({"key": key, "value": value})
+        prov[key] = {"method": "module_default", "confidence": "low"}
+        return value
+
+    length, width, axis = spec_mod.footprint_dims(main)
+    levels = fval(facts, "levels")
+    wall_h = fval(facts, "main_wall_height_m")
+    if wall_h:
+        prov["main.height"] = {"method": facts["main_wall_height_m"].get("method"), "confidence": facts["main_wall_height_m"]["confidence"]}
+    elif levels:
+        wall_h = levels * 3.5
+        prov["main.height"] = {"method": "levels x 3.5 m", "confidence": "medium"}
+    elif fval(facts, "total_height_m"):
+        wall_h = fval(facts, "total_height_m") * 0.75
+        prov["main.height"] = {"method": "0.75 x total height", "confidence": "low"}
+    else:
+        wall_h = note_default("main.height", 8.0)
+    roof_form = str(facts.get("roof_form", {}).get("value", "") or "").lower()
+    roof_type = next((v for k, v in spec_mod.OSM_ROOF.items() if k in roof_form), None) or \
+        next((t for t in spec_mod.ROOF_TYPES if t in roof_form), None)
+    if roof_type is None:
+        roof_type = note_default("main.roof.type", "hip")
+    roof_h = fval(facts, "roof_height_m")
+    if not roof_h:
+        # default rise: 15 % of the short side, capped at 0.7 x wall height (large halls do not get 20 m roofs)
+        roof_h = note_default("main.roof.height", round(max(1.0, min(min(length, width) * 0.15, wall_h * 0.7)), 2))
+    bay = fval(facts, "facade_bay_spacing_m") or note_default("facade.bay_spacing", 4.0)
+    opening = str(facts.get("opening_type", {}).get("value", "rect")).lower()
+    opening = "arch" if "arch" in opening else "rect"
+
+    materials = {k: dict(v) for k, v in spec_mod.DEFAULT_MATERIALS.items()}
+    for key, fk in (("wall", "wall_colour"), ("roof", "roof_colour")):
+        c = parse_colour(facts.get(fk, {}).get("value"))
+        if c:
+            materials[key]["srgb"] = c
+            prov[f"materials.{key}"] = {"method": facts[fk].get("method"), "confidence": facts[fk]["confidence"]}
+        else:
+            defaults_used.append({"key": f"materials.{key}", "value": materials[key]["srgb"]})
+
+    parts = [{"id": "main", "kind": "hall", "footprint": "main", "base_z": 0.0, "height": round(wall_h, 2),
+              "roof": {"type": roof_type, "height": round(roof_h, 2), "parapet": 0.8 if roof_type == "flat" else 0.0},
+              "facade": {"openings": True, "bay_spacing": bay, "opening_type": opening, "level_height": 3.5},
+              "material": {"wall": "wall", "roof": "roof", "trim": "trim"}}]
+    for i, p in enumerate(agent.load_parts(prj, origin)):
+        tags = p["tags"]
+        h = spec_mod_parse(tags.get("height"))
+        mh = spec_mod_parse(tags.get("min_height")) or 0.0
+        lv = spec_mod_parse(tags.get("building:levels"))
+        if not h and lv:
+            h = lv * 3.5 + mh
+        if not h:
+            continue
+        rt = spec_mod.OSM_ROOF.get(tags.get("roof:shape", ""), "flat")
+        rh = spec_mod_parse(tags.get("roof:height")) or (0.0 if rt == "flat" else 2.0)
+        local = [(x - 0, y - 0) for x, y in p["polygon"]]
+        parts.append({"id": f"osm_part_{i + 1}", "kind": tags.get("building:part", "part"),
+                      "footprint": {"polygon": [list(q) for q in local]}, "base_z": mh,
+                      "height": round(max(0.5, h - mh - (rh if rt != "flat" else 0.0)), 2),
+                      "roof": {"type": rt, "height": rh},
+                      "facade": {"openings": True, "bay_spacing": bay, "opening_type": opening, "level_height": 3.5},
+                      "material": {"wall": "wall", "roof": "roof", "trim": "trim"}})
+        prov[f"part.osm_part_{i + 1}"] = {"method": "osm_building_part", "confidence": "medium"}
+    if len(parts) > 1:
+        # OSM 3D convention: when building:parts exist they describe the volume; the outline is not drawn.
+        parts[0]["enabled"] = False
+        parts[0]["note"] = "outline replaced by OSM building:parts"
+
+    ai_notes = []
+    review_log = []
+    photo_views_out = []
+    photos_used = []
+    ai_error = None
+    quality = None
+    provider = ai.get("spec")
+    if provider is not None:
+        photos, seen = [], set()
+        for s_ in prj.read_json("input/sources.json", {"sources": []})["sources"]:
+            f = prj.root / s_.get("path", "")
+            if s_.get("kind") != "photo" or s_.get("use") == "excluded" or not f.is_file():
+                continue
+            h = hashlib.sha256(f.read_bytes()).hexdigest()
+            if h not in seen:                      # the same photo uploaded twice counts once
+                seen.add(h)
+                photos.append(f)
+        triage_log = []
+        if len(photos) > 2:
+            photos, triage_log = triage_photos(prj, provider, photos, st)
+        photos = photos[:6]
+        photos_used = [f.relative_to(prj.root).as_posix() for f in photos]
+        from .research import satellite
+        satellite.ensure(prj, main, origin)
+        sat_imgs = satellite.images_for_ai(prj)
+        sat_note = ("" if not sat_imgs else
+                    f" After the photos come {len(sat_imgs)} satellite plan view(s), north up: the first has the "
+                    "OSM site outline in yellow and the spec grid labelled in metres (x east, y north). Use it for "
+                    "positions, sizes and orientations of every volume - it is the most reliable plan information.")
+        notes = [a.get("notes", "") for a in st.get("approvals", []) if a.get("decision") == "changes_requested"]
+        prompt = agent.MASSING_PROMPT.format(
+            name=st["name"], location=st["location"],
+            footprint=json.dumps([[round(x, 1), round(y, 1)] for x, y in main]),
+            length=length, width=width, axis=axis,
+            directions=", ".join(f"{d:g} ({s:.0%})" for d, s in geom.edge_direction_shares(main)) or "none",
+            parts=json.dumps([{**{k: v for k, v in p.items() if k not in ("footprint", "facade", "material")},
+                               "footprint": {"polygon": [[round(x, 1), round(y, 1)] for x, y in
+                                                         p["footprint"]["polygon"]]}}
+                              for p in parts[1:] if isinstance(p.get("footprint"), dict) and "polygon" in p["footprint"]]),
+            facts=json.dumps({k: v.get("value") for k, v in facts.items()}, ensure_ascii=False),
+            notes=json.dumps(notes + [st.get("notes", "")], ensure_ascii=False), satellite_note=sat_note)
+        try:
+            def massing_check(obj):
+                errs = spec_mod.validate_massing(obj)
+                if errs:
+                    return errs
+                if not obj["parts"]:
+                    return ["parts must not be empty"]
+                return (material_errors(obj, int(st["budgets"].get("materials_max", 10)))
+                        + orientation_errors(obj["parts"], main)
+                        + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts))
+
+            massing, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=massing_check,
+                                       images=photos + sat_imgs, retries=2, accept_invalid=True)
+            if getattr(res, "validation_errors", None):
+                ai_notes_extra = [f"AI could not fix: {e}" for e in res.validation_errors[:6]]
+            else:
+                ai_notes_extra = []
+            normalise_glass(massing)
+            rounds = int(settings_mod.load().get("photo_review_rounds", 2) or 0)
+            if rounds > 0 and photos:
+                massing, review_log = photo_review(prj, provider, massing, photos, massing_check, main, materials,
+                                                   st, rounds, sat_imgs)
+                normalise_glass(massing)
+            use_judge = bool(photos) and settings_mod.load().get("judge", True)
+            if use_judge:
+                quality = judge(prj, provider, massing, photos, sat_imgs, main, materials, st)
+            if photos and settings_mod.load().get("facade_pass", True):
+                refined, facade_log = facade_pass(prj, provider, massing, photos, massing_check, st)
+                if refined is not massing and use_judge and (quality or {}).get("overall") is not None:
+                    # keep the facade pass only if the independent score does not drop
+                    q2 = judge(prj, provider, refined, photos, sat_imgs, main, materials, st)
+                    before, after = quality.get("overall"), (q2 or {}).get("overall")
+                    if after is not None and after >= before:
+                        massing, quality = refined, q2
+                        facade_log["result"] = f"kept: judge {before} -> {after}"
+                    else:
+                        facade_log["result"] = f"discarded: judge {before} -> {after}; facades before the pass kept"
+                        facade_log["verdict"] = (facade_log.get("verdict") or "") + " (discarded)"
+                elif refined is not massing:
+                    massing = refined
+                review_log.append(facade_log)
+            ai_parts = massing["parts"]
+            photo_views_out = massing.get("views") or []
+            if ai_parts:
+                # The AI model replaces the OSM parts (it received their outlines and may reuse them); adding both
+                # stacked duplicate volumes on top of each other.
+                parts = list(ai_parts)
+                for p in ai_parts:
+                    prov[f"part.{p['id']}"] = {"method": f"ai_massing:{res.provider}", "confidence": "medium"}
+                for k, v in (massing.get("materials") or {}).items():
+                    materials.setdefault(k, {})
+                    materials[k] = {"srgb": v["srgb"], "roughness": v.get("roughness", 0.75), **({"metallic": v["metallic"]} if "metallic" in v else {})}
+                    prov[f"materials.{k}"] = {"method": f"ai_massing:{res.provider}", "confidence": "medium"}
+                defaults_used = [d for d in defaults_used if not d["key"].startswith(("materials", "main."))]
+                ai_notes = massing.get("notes", []) + ai_notes_extra
+        except Exception as exc:
+            ai_notes = [f"AI massing failed, using sources/defaults: {exc}"[:300]]
+            ai_error = str(exc)[:300]
+
+    spec = {
+        "spec_version": 1,
+        "id": st["id"], "name": st["name"], "location": st["location"],
+        "origin": {"lat": origin[0], "lon": origin[1]},
+        "footprint": {"local": [[round(x, 3), round(y, 3)] for x, y in main],
+                      "length_m": round(length, 2), "width_m": round(width, 2), "axis_deg": round(axis, 1)},
+        "parts": parts,
+        "materials": materials,
+        "budgets": st["budgets"],
+        "provenance": prov,
+        "defaults_used": defaults_used,
+        "notes": ai_notes,
+        "photo_review": review_log,
+        "quality": quality,
+        "photo_triage": triage_log if provider is not None else [],
+        "photos": photos_used,                      # "photo n" in views / renders = photos[n-1]
+        "views": photo_views_out,
+    }
+    errs = spec_mod.validate_massing({"parts": spec["parts"], "materials": spec["materials"]})
+    if errs:
+        raise RuntimeError("spec invalid: " + "; ".join(errs[:5]))
+    spec["estimated_triangles"] = spec_mod.estimate_triangles(spec)
+    spec["issues"] = spec_mod.check_structure(spec["parts"], main, facts)
+    if ai_error:
+        # An AI is configured but did not answer (quota, sign-in, network): the plan is only the fallback. Block A2
+        # so a degraded model is never approved by accident; rerun the spec later, or turn the AI off to go on.
+        spec["issues"].insert(0, {"severity": "error", "part": None, "code": "ai_failed",
+                                  "message": f"AI massing failed ({ai_error}); this plan is the no-AI fallback. Run the "
+                                             f"spec again when the AI is available, or turn the AI off in Connections "
+                                             f"to continue without it."})
+    for e in review_log:
+        if "limit" in str(e.get("result", "")).lower() or "failed" in str(e.get("result", "")).lower():
+            spec["issues"].append({"severity": "warning", "part": None, "code": "photo_review_incomplete",
+                                   "message": f"photo review step did not finish: {e['result']}"[:300]})
+            break
+    prj.write_json("spec/landmark_spec.json", spec)
+    return spec
+
+
+def _side_by_side(photo: Path, render: Path, out: Path, label: str) -> Path:
+    from PIL import Image, ImageDraw
+    a = Image.open(photo).convert("RGB")
+    b = Image.open(render).convert("RGB")
+    h = 640
+    a = a.resize((max(1, int(a.width * h / a.height)), h))
+    b = b.resize((max(1, int(b.width * h / b.height)), h))
+    sheet = Image.new("RGB", (a.width + b.width + 12, h + 34), "white")
+    sheet.paste(a, (0, 34))
+    sheet.paste(b, (a.width + 12, 34))
+    d = ImageDraw.Draw(sheet)
+    d.text((8, 10), f"PHOTO ({label})", fill="black")
+    d.text((a.width + 20, 10), "MODEL (same viewpoint)", fill="black")
+    sheet.thumbnail((1800, 1800))
+    sheet.save(out, "JPEG", quality=85)
+    return out
+
+
+VIEW_LABELS = "ABCDEFGH"
+REVIEW_ASPECTS = ("plan", "silhouette", "heights", "facade", "materials")
+ELEVATIONS = {"street": 8.0, "raised": 25.0, "aerial": 50.0}
+
+
+def _contact_sheet(renders: list, labels: str, out: Path) -> Path:
+    from PIL import Image, ImageDraw, ImageFont
+    cells = [Image.open(p).convert("RGB") for p in renders]
+    w, h = 480, 320
+    sheet = Image.new("RGB", (w * 4, h * 2), "white")
+    try:
+        font = ImageFont.truetype("arial.ttf", 56)
+    except Exception:
+        font = ImageFont.load_default()
+    for i, im in enumerate(cells):
+        im = im.resize((w, h))
+        d = ImageDraw.Draw(im)
+        d.rectangle((0, 0, 70, 70), fill="white")
+        d.text((14, 4), labels[i], fill="black", font=font)
+        sheet.paste(im, ((i % 4) * w, (i // 4) * h))
+    sheet.save(out, "JPEG", quality=85)
+    return out
+
+
+def triage_photos(prj: Project, provider, photos: list, st: dict, max_keep: int = 6):
+    """Keep the photos that show the CURRENT EXTERIOR: one AI look at a numbered contact sheet of all candidates.
+    Photos the user uploaded are always kept (first); on any failure the original order is used."""
+    from PIL import Image, ImageDraw, ImageFont
+    cands = photos[:16]
+    out_root = prj.root / "reports" / "photo_review"
+    out_root.mkdir(parents=True, exist_ok=True)
+    w, h, cols = 360, 270, 4
+    rows = (len(cands) + cols - 1) // cols
+    sheet = Image.new("RGB", (w * cols, h * rows), "white")
+    try:
+        font = ImageFont.truetype("arial.ttf", 44)
+    except Exception:
+        font = ImageFont.load_default()
+    for i, f in enumerate(cands):
+        try:
+            im = Image.open(f).convert("RGB")
+        except Exception:
+            continue
+        im.thumbnail((w - 6, h - 6))
+        cell = Image.new("RGB", (w, h), (235, 235, 235))
+        cell.paste(im, ((w - im.width) // 2, (h - im.height) // 2))
+        d = ImageDraw.Draw(cell)
+        d.rectangle((0, 0, 64, 56), fill="white")
+        d.text((8, 4), str(i + 1), fill="black", font=font)
+        sheet.paste(cell, ((i % cols) * w, (i // cols) * h))
+    sheet_path = out_root / "triage.jpg"
+    sheet.save(sheet_path, "JPEG", quality=85)
+    prompt = agent.TRIAGE_PROMPT.format(name=st["name"], location=st["location"], n=len(cands))
+
+    def check(o):
+        ps = o.get("photos")
+        if not isinstance(ps, list) or not ps:
+            return ["photos must be a non-empty list"]
+        return [f"bad entry {p}" for p in ps if not (isinstance(p.get("n"), int) and 1 <= p["n"] <= len(cands))]
+    try:
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=check, images=[sheet_path], retries=1)
+    except Exception as exc:
+        return photos, [{"result": f"photo triage failed, original order kept: {exc}"[:300]}]
+    user_paths = {str(prj.root / s["path"]) for s in prj.read_json("input/sources.json", {"sources": []})["sources"]
+                  if s.get("origin") == "user" and s.get("path")}
+    info = {p["n"]: p for p in obj["photos"]}
+    rank = []
+    for i, f in enumerate(cands, start=1):
+        p = info.get(i, {})
+        good = p.get("kind") in ("exterior", "aerial") and p.get("current", True) and float(p.get("score", 0)) >= 2
+        is_user = str(f) in user_paths
+        rank.append((0 if is_user else 1, -float(p.get("score", 0)), i, f, good or is_user))
+    kept = [f for _, _, _, f, ok in sorted(rank) if ok][:max_keep]
+    if len(kept) < 2:                              # too strict for this landmark: fall back to the best scored
+        kept = [f for _, _, _, f, _ in sorted(rank)][:max_keep]
+    log = [{"n": i, "file": f.name, "kind": info.get(i, {}).get("kind"), "current": info.get(i, {}).get("current"),
+            "score": info.get(i, {}).get("score"), "kept": f in kept, "note": str(info.get(i, {}).get("note", ""))[:160]}
+           for i, f in enumerate(cands, start=1)]
+    prj.log("photo triage", {"kept": len(kept), "of": len(cands)})
+    return kept, log
+
+
+def _compass(az: float) -> str:
+    names = ["east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east"]
+    return names[int(((az % 360) + 22.5) // 45) % 8]
+
+
+def match_viewpoints(prj: Project, provider, massing: dict, photos: list, main, base_materials: dict, st: dict,
+                     out_root: Path, sat_imgs: list | None = None):
+    """Which side was each photo taken from? Render the model from 8 directions (every 45 degrees from the main
+    frontage) and let the AI pick a label per photo - recognising a side is far more reliable than guessing a
+    compass angle. Returns (views, log entry); views = [] when it could not be done."""
+    from .engine import runner as engine_runner
+    dirs = geom.edge_direction_shares(main)
+    d0 = dirs[0][0] if dirs else 0.0
+    cand_az = {VIEW_LABELS[k]: (d0 - 90.0 + 45.0 * k) % 360.0 for k in range(8)}
+    mats = {k: dict(v) for k, v in base_materials.items()}
+    mats.update(massing.get("materials") or {})
+    cand = {"footprint": {"local": [list(p) for p in main]}, "parts": massing["parts"], "materials": mats,
+            "budgets": st["budgets"]}
+    views = {f"side_{lab}": {"azimuth_deg": az, "elevation_deg": 12.0} for lab, az in cand_az.items()}
+    renders = engine_runner.preview(prj, cand, views, out_root / "sides")
+    entry = {"round": 0, "step": "viewpoints"}
+    if len(renders) < 8:
+        entry["result"] = "could not render the 8 sides - viewpoint matching skipped"
+        return [], entry
+    by_name = {p.stem: p for p in renders}
+    sheet = _contact_sheet([by_name[f"side_{lab}"] for lab in VIEW_LABELS], VIEW_LABELS, out_root / "sides_AH.jpg")
+    use = photos[:4]
+    sat_imgs = list(sat_imgs or [])[:1]
+    prompt = agent.MATCH_PROMPT.format(
+        name=st["name"], n=len(use), labels=", ".join(VIEW_LABELS),
+        label_dirs="; ".join(f"{lab} = {_compass(az)} ({az:.0f} deg)" for lab, az in cand_az.items()),
+        satellite_note=("" if not sat_imgs else " Between the photos and the contact sheet there is a satellite plan "
+                        "view (north up, site outline in yellow): use the streets and the surroundings in it to "
+                        "decide from which side each photo was taken."))
+
+    def check(o):
+        ms = o.get("matches")
+        if not isinstance(ms, list) or not ms:
+            return ["matches must be a non-empty list"]
+        return [f"bad label in {m}" for m in ms if str(m.get("label", "")).upper() not in VIEW_LABELS]
+    try:
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=check,
+                             images=list(use) + sat_imgs + [sheet], retries=1)
+    except Exception as exc:
+        entry["result"] = f"viewpoint matching failed: {exc}"[:300]
+        return [], entry
+    out = []
+    for m in obj["matches"]:
+        try:
+            n = int(m.get("photo"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= len(use) and all(v["photo"] != n for v in out):
+            lab = str(m["label"]).upper()
+            out.append({"photo": n, "azimuth_deg": round(cand_az[lab], 1),
+                        "elevation_deg": ELEVATIONS.get(str(m.get("elevation", "street")), 8.0), "label": lab})
+    entry.update({"images": [sheet.relative_to(prj.root).as_posix()],
+                  "differences": [f"photo {m.get('photo')} = side {str(m.get('label')).upper()} "
+                                  f"({m.get('elevation', 'street')}): {m.get('why', '')}"[:240] for m in obj["matches"]],
+                  "verdict": "viewpoints matched"})
+    prj.log("photo viewpoints matched", {"views": out})
+    return out, entry
+
+
+def photo_review(prj: Project, provider, massing: dict, photos: list, check, main, base_materials: dict, st: dict,
+                 rounds: int, sat_imgs: list | None = None):
+    """Render the candidate model from each photo's viewpoint, show the AI photo | render pairs, let it revise.
+
+    Stops at the first "match", when the AI cannot produce a valid revision, or after `rounds` rounds.
+    Returns (massing, log); comparison sheets are kept in reports/photo_review/ for the A2 page."""
+    import shutil
+    from .engine import runner as engine_runner
+    out_root = prj.root / "reports" / "photo_review"
+    if out_root.exists():
+        shutil.rmtree(out_root, ignore_errors=True)
+    out_root.mkdir(parents=True, exist_ok=True)
+    log = []
+    dirs = geom.edge_direction_shares(main)
+    sat = next((p for p in (sat_imgs or []) if p.name == "satellite_annotated.jpg"), None)
+    matched, entry0 = match_viewpoints(prj, provider, massing, photos, main, base_materials, st, out_root, sat_imgs)
+    log.append(entry0)
+    if matched:
+        massing = dict(massing, views=matched)
+    candidates = [massing]
+    for r in range(1, rounds + 1):
+        views = {}
+        pairs = []
+        for v in (massing.get("views") or [])[:4]:
+            try:
+                idx = int(v.get("photo", 0)) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(photos) and f"photo{idx + 1}" not in views:
+                views[f"photo{idx + 1}"] = {"azimuth_deg": float(v.get("azimuth_deg", 270)),
+                                            "elevation_deg": float(v.get("elevation_deg", 10))}
+                pairs.append((photos[idx], f"photo{idx + 1}"))
+        if not pairs:                       # no viewpoints given: look at the main frontage from both sides
+            d0 = dirs[0][0] if dirs else 0.0
+            for k, az in enumerate((d0 - 90, d0 + 90)[:len(photos)]):
+                views[f"photo{k + 1}"] = {"azimuth_deg": az, "elevation_deg": 10}
+                pairs.append((photos[k], f"photo{k + 1}"))
+        mats = {k: dict(v) for k, v in base_materials.items()}
+        mats.update(massing.get("materials") or {})
+        cand = {"footprint": {"local": [list(p) for p in main]}, "parts": massing["parts"], "materials": mats,
+                "budgets": st["budgets"]}
+        rdir = out_root / f"round{r}"
+        if sat is not None:
+            from .research import satellite
+            views["satplan"] = {"ortho_extent": list(satellite.EXTENT_M)}
+        renders = {p.stem: p for p in engine_runner.preview(prj, cand, views, rdir)}
+        sheets = [_side_by_side(ph, renders[name], out_root / f"round{r}_{name}.jpg", name)
+                  for ph, name in pairs if name in renders]
+        if sat is not None and "satplan" in renders:
+            sheets.append(_side_by_side(sat, renders["satplan"], out_root / f"round{r}_satplan.jpg", "satellite"))
+        entry = {"round": r, "images": [s.relative_to(prj.root).as_posix() for s in sheets]}
+        if not sheets:
+            entry["result"] = "no preview renders (Blender missing?) - review skipped"
+            log.append(entry)
+            break
+        prompt = agent.REVIEW_PROMPT.format(
+            name=st["name"], location=st["location"],
+            massing=json.dumps({k: massing.get(k) for k in ("parts", "materials", "views")}, ensure_ascii=False),
+            footprint=json.dumps([[round(x, 1), round(y, 1)] for x, y in main]),
+            directions=", ".join(f"{d:g} ({s:.0%})" for d, s in dirs) or "none",
+            satellite_note=("" if sat is None else " The LAST image compares the SATELLITE plan view (left, north up, "
+                            "site outline in yellow, grid in metres) with YOUR MODEL seen from straight above "
+                            "(right) at the same extent and scale: check positions, plan shapes, sizes and "
+                            "orientations of every volume against it."))
+
+        def review_check(o):
+            scores = o.get("scores")
+            if not isinstance(scores, dict) or not all(isinstance(scores.get(k), (int, float))
+                                                       for k in REVIEW_ASPECTS):
+                return [f'"scores" must give 1-5 for {", ".join(REVIEW_ASPECTS)}']
+            low = [k for k in REVIEW_ASPECTS if scores[k] < 4]
+            if o.get("verdict") == "match":
+                return ([f'"match" is not allowed with scores below 4 ({", ".join(low)}): answer "revise" with the '
+                         f'corrected model'] if low else [])
+            if "parts" not in o:
+                return ['verdict "revise" needs the complete corrected "parts"']
+            return check(o)
+        try:
+            # structure / material errors are fixed inside the same round (retries), so every round is a real
+            # photo comparison rather than a repair of the previous answer
+            obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=review_check,
+                                   images=sheets, retries=3)
+        except Exception as exc:
+            entry["result"] = f"review failed, kept the previous model: {exc}"[:400]
+            log.append(entry)
+            break
+        entry["verdict"] = obj.get("verdict")
+        entry["scores"] = {k: obj.get("scores", {}).get(k) for k in REVIEW_ASPECTS}
+        entry["differences"] = obj.get("differences", [])[:12]
+        log.append(entry)
+        prj.log("photo review", {"round": r, "verdict": entry["verdict"], "differences": len(entry["differences"])})
+        if obj.get("verdict") == "match":
+            break
+        # A-H matching is the starting point; a review that has seen photo | render side by side may correct a view
+        # (the first draft can be wrong enough that two opposite sides look alike). Invalid views keep the old ones.
+        new_views = []
+        for v in obj.get("views") or []:
+            try:
+                new_views.append({"photo": int(v["photo"]), "azimuth_deg": float(v["azimuth_deg"]) % 360.0,
+                                  "elevation_deg": float(v.get("elevation_deg", 8.0))})
+            except (TypeError, ValueError, KeyError):
+                pass
+        obj["views"] = new_views or massing.get("views") or matched
+        if new_views and matched and new_views != [{k: m[k] for k in ("photo", "azimuth_deg", "elevation_deg")}
+                                                   for m in matched]:
+            entry["views_changed"] = True
+        massing = obj
+        candidates.append(massing)
+    if len(candidates) > 1 and not (log and log[-1].get("verdict") == "match"):
+        massing, pick = select_best(prj, provider, candidates, photos, sat, main, base_materials, st, out_root)
+        log.append(pick)
+    return massing, log
+
+
+def select_best(prj: Project, provider, candidates: list, photos: list, sat, main, base_materials: dict, st: dict,
+                out_root: Path):
+    """The last revision is not always the best and was never rendered: render every candidate (photo-1 view and
+    top view) and let the AI choose. Falls back to the last candidate when anything fails."""
+    from PIL import Image, ImageDraw
+    from .engine import runner as engine_runner
+    entry = {"round": len(candidates), "step": "select"}
+    cands = candidates[-4:]                                # first draft may drop out when there are many rounds
+    offset = len(candidates) - len(cands)
+    sheets = []
+    for k, m in enumerate(cands, start=1):
+        v1 = next((v for v in (m.get("views") or []) if int(v.get("photo", 0)) == 1), None) or \
+            {"azimuth_deg": 270.0, "elevation_deg": 10.0}
+        views = {"photo1": {"azimuth_deg": float(v1["azimuth_deg"]), "elevation_deg": float(v1.get("elevation_deg", 10))}}
+        if sat is not None:
+            from .research import satellite
+            views["satplan"] = {"ortho_extent": list(satellite.EXTENT_M)}
+        mats = {kk: dict(vv) for kk, vv in base_materials.items()}
+        mats.update(m.get("materials") or {})
+        cand = {"footprint": {"local": [list(p) for p in main]}, "parts": m["parts"], "materials": mats,
+                "budgets": st["budgets"]}
+        renders = {p.stem: p for p in engine_runner.preview(prj, cand, views, out_root / f"cand{k}")}
+        if "photo1" not in renders:
+            continue
+        tiles = [Image.open(renders["photo1"]).convert("RGB")]
+        if "satplan" in renders:
+            tiles.append(Image.open(renders["satplan"]).convert("RGB"))
+        h = 400
+        tiles = [t.resize((int(t.width * h / t.height), h)) for t in tiles]
+        sheet = Image.new("RGB", (sum(t.width for t in tiles) + 10 * (len(tiles) - 1), h + 40), "white")
+        x = 0
+        for t in tiles:
+            sheet.paste(t, (x, 40))
+            x += t.width + 10
+        ImageDraw.Draw(sheet).text((10, 12), f"CANDIDATE {k}", fill="black")
+        path = out_root / f"candidate{k}.jpg"
+        sheet.save(path, "JPEG", quality=85)
+        sheets.append((k, path))
+    if len(sheets) < 2:
+        entry["result"] = "not enough candidate renders; kept the last model"
+        return candidates[-1], entry
+    refs = [photos[0]] + ([sat] if sat is not None else [])
+    prompt = agent.SELECT_PROMPT.format(name=st["name"], n=len(sheets),
+                                        refs="photo 1" + (" and the satellite plan view" if sat is not None else ""))
+    labels = {k for k, _ in sheets}
+    try:
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
+                             validator=lambda o: [] if int(o.get("best", -1)) in labels else ["best must be one of the candidates"],
+                             images=refs + [p for _, p in sheets], retries=1)
+    except Exception as exc:
+        entry["result"] = f"selection failed, kept the last model: {exc}"[:300]
+        return candidates[-1], entry
+    best = int(obj["best"])
+    entry.update({"verdict": f"chose candidate {best} of {len(sheets)}",
+                  "differences": [f"why: {obj.get('why', '')}"[:400],
+                                  f"candidate 1 = {'first draft' if offset == 0 else f'round {offset}'}; "
+                                  f"candidate {len(cands)} = last revision"],
+                  "images": [p.relative_to(prj.root).as_posix() for _, p in sheets]})
+    prj.log("photo review: best candidate", {"best": best, "of": len(sheets)})
+    return cands[best - 1], entry
+
+
+def orientation_errors(parts, main) -> list[str]:
+    dirs = geom.edge_directions(main)
+    out = []
+    for p in parts:
+        fp = p.get("footprint")
+        key = next((k for k in ("rect", "rounded_rect", "stadium") if isinstance(fp, dict) and k in fp), None)
+        if key and dirs:
+            rot = float(fp[key].get("rot_deg", 0.0))
+            if min(geom.angle_gap(rot, d) for d in dirs) > 8.0:
+                out.append(f"part {p.get('id')}: rot_deg {rot:g} follows no footprint edge; use one of "
+                           f"{', '.join(f'{d:g}' for d in dirs)} (or +90)")
+    return out
+
+
+def normalise_glass(massing: dict) -> None:
+    """Curtain-wall glass must reflect: metallic >= 0.85 and roughness <= 0.1 (photo colour kept)."""
+    mats = massing.get("materials") or {}
+    for p in massing.get("parts", []):
+        if (p.get("facade") or {}).get("opening_type") == "curtain_wall":
+            m = mats.get((p.get("material") or {}).get("wall", "wall"))
+            if m is not None:
+                m["metallic"] = max(float(m.get("metallic", 0.0) or 0.0), 0.85)
+                m["roughness"] = min(float(m.get("roughness", 0.1) or 0.1), 0.1)
+
+
+def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: dict):
+    """A second, facade-only AI pass: per-floor facades and visible details (features) for every part, from the
+    photos. Geometry (footprints, heights, roofs) is kept exactly; an invalid answer leaves the model unchanged."""
+    entry = {"step": "facade", "round": None}
+    prompt = agent.FACADE_PROMPT.format(
+        name=st["name"], location=st["location"],
+        massing=json.dumps({"parts": massing["parts"], "materials": massing.get("materials", {})}, ensure_ascii=False))
+
+    def merged(o):
+        by_id = {p.get("id"): p for p in o.get("parts", []) if isinstance(p, dict)}
+        parts = []
+        for p in massing["parts"]:
+            q = by_id.get(p["id"])
+            parts.append(dict(p, **{k: q[k] for k in ("facade", "features") if q and k in q}))
+        mats = dict(massing.get("materials") or {})
+        mats.update(o.get("materials") or {})
+        return dict(massing, parts=parts, materials=mats)
+
+    try:
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=lambda o: check(merged(o)),
+                             images=photos[:4], retries=2)
+    except Exception as exc:
+        entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
+        return massing, entry
+    out = merged(obj)
+    n_feat = sum(len(p.get("features") or []) for p in out["parts"])
+    entry.update({"verdict": f"facades refined, {n_feat} detail features", "differences": obj.get("notes", [])[:8]})
+    prj.log("facade pass", {"features": n_feat})
+    return out, entry
+
+
+def judge(prj: Project, provider, massing: dict, photos: list, sat_imgs: list, main, base_materials: dict, st: dict):
+    """Independent AI score of the final model (it cannot edit anything): photo | render pairs from up to three
+    photo viewpoints plus satellite | top view. Stored in spec["quality"]; never blocks."""
+    from .engine import runner as engine_runner
+    from .research import satellite
+    out_root = prj.root / "reports" / "judge"
+    views, pairs = {}, []
+    for v in (massing.get("views") or [])[:3]:
+        try:
+            n = int(v["photo"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if 1 <= n <= len(photos):
+            views[f"photo{n}"] = {"azimuth_deg": float(v["azimuth_deg"]), "elevation_deg": float(v.get("elevation_deg", 8))}
+            pairs.append((photos[n - 1], f"photo{n}"))
+    sat = next((p for p in (sat_imgs or []) if p.name == "satellite_annotated.jpg"), None)
+    if sat is not None:
+        views["satplan"] = {"ortho_extent": list(satellite.EXTENT_M)}
+    mats = {k: dict(v) for k, v in base_materials.items()}
+    mats.update(massing.get("materials") or {})
+    cand = {"footprint": {"local": [list(p) for p in main]}, "parts": massing["parts"], "materials": mats,
+            "budgets": st["budgets"]}
+    renders = {p.stem: p for p in engine_runner.preview(prj, cand, views, out_root)}
+    sheets = [_side_by_side(ph, renders[name], out_root / f"judge_{name}.jpg", name) for ph, name in pairs
+              if name in renders]
+    if sat is not None and "satplan" in renders:
+        sheets.append(_side_by_side(sat, renders["satplan"], out_root / "judge_satplan.jpg", "satellite"))
+    if not sheets:
+        return {"result": "no renders to judge"}
+
+    def check(o):
+        sc = o.get("scores") or {}
+        if not all(isinstance(sc.get(k), (int, float)) for k in REVIEW_ASPECTS):
+            return ["scores for every aspect are required"]
+        return [] if isinstance(o.get("overall"), (int, float)) else ["overall is required"]
+    try:
+        obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, agent.JUDGE_PROMPT.format(name=st["name"]),
+                               validator=check, images=sheets, retries=1)
+    except Exception as exc:
+        return {"result": f"judge failed: {exc}"[:300]}
+    q = {"scores": {k: obj["scores"][k] for k in REVIEW_ASPECTS}, "overall": obj["overall"],
+         "errors": [str(e)[:240] for e in obj.get("errors", [])[:3]], "model": res.model,
+         "images": [s.relative_to(prj.root).as_posix() for s in sheets]}
+    prj.log("quality judged", {"overall": q["overall"], "scores": q["scores"]})
+    return q
+
+
+def material_errors(massing: dict, max_materials: int | None = None) -> list[str]:
+    """Parts must use the materials the AI defined (not silently fall back to the defaults), and vice versa;
+    with max_materials, the number of materials the model uses (opening included) must fit the budget."""
+    defined = set(massing.get("materials") or {})
+    slots = {"wall": "wall", "roof": "roof", "trim": "trim"}      # a part without a mapping uses these names
+    used = {m for p in massing.get("parts", []) for m in {**slots, **(p.get("material") or {})}.values()}
+    used |= {f.get("material", "trim") for p in massing.get("parts", []) for f in (p.get("features") or [])}
+    errs = [f"part material '{m}' is not defined in materials" for m in sorted(used - defined - set(spec_mod.DEFAULT_MATERIALS))]
+    errs += [f"material '{m}' is defined but no part uses it (assign it to the parts it belongs to)"
+             for m in sorted(defined - used - {"opening"})]
+    if max_materials and len(used | {"opening"}) > max_materials:
+        errs.append(f"{len(used | {'opening'})} materials used, the limit is {max_materials} (opening included): "
+                    f"reuse existing materials for details")
+    return errs
+
+
+def spec_blocking_issues(prj: Project) -> list[dict]:
+    sp = prj.read_json("spec/landmark_spec.json")
+    if not sp:
+        return []
+    facts = merged_facts(prj)
+    issues = spec_mod.check_structure(sp["parts"], [tuple(p) for p in sp["footprint"]["local"]], facts)
+    issues += [i for i in sp.get("issues", []) if i.get("code") == "ai_failed"]
+    return [i for i in issues if i["severity"] == "error"]
+
+
+def spec_mod_parse(v):
+    from .research.sources import parse_height
+    return parse_height(v)
+
+
+# ----------------------------------------------------------------------------- release
+def release(prj: Project) -> dict:
+    res = prj.read_json("reports/build_result.json", {})
+    files = ["output/model.glb", "blender/model.blend", "spec/landmark_spec.json", "input/sources.json",
+             "input/research.json", "reports/build_result.json"] + [f"renders/{r}" for r in res.get("renders", [])]
+    sums = []
+    for f in files:
+        p = prj.root / f
+        if p.exists():
+            sums.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {f}")
+    (prj.path("reports", "checksums.sha256")).write_text("\n".join(sums) + "\n", encoding="utf-8")
+    from . import textures as textures_mod
+    srcs = {s["id"]: s for s in prj.read_json("input/sources.json", {"sources": []})["sources"]}
+    attributions = []
+    for t in textures_mod.load(prj)["textures"]:
+        s = srcs.get(t.get("source_id") or "", {})
+        use = f"repeat on '{t['material']}'" if t["mode"] == "repeat" else f"panel on {t['part']} ({t['side']})"
+        attributions.append(f"- {s.get('title') or t['file']}: {t.get('author') or s.get('author', '')} "
+                            f"({s.get('licence_short') or t.get('licence')}) {s.get('url', '')} - {use}")
+    st = prj.state()
+    notes = [f"# {st['name']} - release notes", "", f"Date: {time.strftime('%Y-%m-%d')}",
+             f"Triangles: {res.get('triangles')}, GLB bytes: {res.get('bytes')}, materials: {res.get('materials')}",
+             "", "## Approvals"] + [f"- {a['phase']}: {a['decision']} {a.get('notes', '')}" for a in st.get("approvals", [])]
+    if attributions:
+        notes += ["", "## Texture attributions"] + attributions
+    refs = [s for s in srcs.values() if s.get("kind") == "satellite" or s.get("use") == "reference_only"]
+    if refs:
+        notes += ["", "## Reference imagery (not used as texture)"] + [
+            f"- {s.get('title') or s.get('path')}: {s.get('author', '')} ({s.get('licence', '')}) {s.get('url', '')}"
+            for s in refs]
+    sp = prj.read_json("spec/landmark_spec.json", {})
+    if sp.get("defaults_used"):
+        notes += ["", "## Values from module defaults (not sourced)"] + [f"- {d['key']}: {d['value']}" for d in sp["defaults_used"]]
+    prj.path("reports", "release_notes.md").write_text("\n".join(notes) + "\n", encoding="utf-8")
+    return {"checksums": len(sums)}
+
+
+# ----------------------------------------------------------------------------- runner
+def run_phase(prj: Project, phase: str) -> str:
+    """Execute one automatic phase. Returns the new status."""
+    prj.set_phase(phase, "running")
+    try:
+        if phase == "setup":
+            prj.set_phase(phase, "done")
+        elif phase == "doctor":
+            rep = doctor.run_all()
+            prj.write_json("reports/doctor.json", rep)
+            if rep["ok"]:
+                prj.set_phase(phase, "done", "required checks pass")
+            else:
+                bad = [c["id"] for c in rep["checks"] if not c["ok"] and not c.get("optional")]
+                prj.set_phase(phase, "failed", "missing: " + ", ".join(bad))
+        elif phase == "research":
+            rep = agent.run(prj)
+            ok = sum(1 for s in rep["steps"] if s.get("ok"))
+            prj.set_phase(phase, "done", f"{ok}/{len(rep['steps'])} research steps succeeded; "
+                                         f"{len(rep['warnings'])} warnings")
+        elif phase == "completion":
+            items = missing_items(prj)
+            prj.update_state(lambda s: s.update(missing=items))
+            if items:
+                prj.set_phase(phase, "blocked", f"{len(items)} item(s) needed from the user")
+            else:
+                prj.set_phase(phase, "done", "input gate READY")
+        elif phase == "spec":
+            sp = build_spec(prj)
+            errs = [i for i in sp.get("issues", []) if i["severity"] == "error"]
+            prj.set_phase(phase, "done", f"{len(sp['parts'])} parts, ~{sp['estimated_triangles']} triangles before "
+                                         f"openings; {len(sp['defaults_used'])} defaults used"
+                                         + (f"; {len(errs)} STRUCTURE ERROR(S): fix in A2 (edit spec or request changes)"
+                                            if errs else ""))
+        elif phase == "build":
+            res = engine_runner.build(prj)
+            if res.get("ok"):
+                prj.set_phase(phase, "done", f"{res['triangles']} triangles, {res['bytes']} bytes, "
+                                             f"{len(res.get('renders', []))} renders")
+            else:
+                prj.set_phase(phase, "failed", "; ".join(res.get("errors", ["build failed"]))[:500])
+        elif phase == "release":
+            r = release(prj)
+            prj.set_phase(phase, "done", f"{r['checksums']} checksummed files")
+        else:
+            prj.set_phase(phase, "waiting_approval")
+    except Exception as exc:
+        prj.log("phase error", {"phase": phase, "trace": traceback.format_exc()[-2000:]})
+        prj.set_phase(phase, "failed", f"{type(exc).__name__}: {exc}"[:500])
+    return prj.state()["phases"][phase]["status"]
+
+
+def run_until_blocked(prj: Project) -> dict:
+    """Run automatic phases in order until an approval, a block (missing data) or a failure."""
+    for p in PHASES:
+        pid = p["id"]
+        status = prj.state()["phases"][pid]["status"]
+        if status in ("done", "approved"):
+            continue
+        if p["approval"]:
+            if status != "waiting_approval":
+                prj.set_phase(pid, "waiting_approval")
+            return {"stopped_at": pid, "reason": "approval"}
+        status = run_phase(prj, pid)
+        if status != "done":
+            return {"stopped_at": pid, "reason": status}
+    return {"stopped_at": None, "reason": "complete"}
+
+
+class SpecIssues(ValueError):
+    """The plan has structural errors (floating parts, parts outside the footprint): approval refused."""
+
+    def __init__(self, issues):
+        self.issues = issues
+        super().__init__("; ".join(i["message"] for i in issues))
+
+
+def approve(prj: Project, phase: str, decision: str, notes: str = "") -> dict:
+    if decision not in ("approved", "changes_requested"):
+        raise ValueError("decision must be approved or changes_requested")
+    if decision == "approved" and phase in ("spec_review", "build_review"):
+        blocking = spec_blocking_issues(prj)
+        if blocking:
+            raise SpecIssues(blocking)
+    prj.update_state(lambda s: s["approvals"].append({"phase": phase, "decision": decision, "notes": notes,
+                                                      "t": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+    if decision == "approved":
+        prj.set_phase(phase, "approved", notes)
+        return {"ok": True}
+    target = REWIND[phase]
+    ids = [p["id"] for p in PHASES]
+    for pid in ids[ids.index(target):]:
+        prj.set_phase(pid, "pending", f"reset by change request on {phase}" if pid != phase else notes)
+    return {"ok": True, "rewound_to": target}
+
+
+def submit_inputs(prj: Project, values: dict) -> list:
+    """Store user answers; footprint by OSM id is fetched immediately."""
+    from .research import sources
+    vals = dict(values)
+    if "latlon" in vals and vals["latlon"]:
+        lat, lon = [float(x) for x in re.split(r"[,\s]+", str(vals.pop("latlon")).strip())[:2]]
+        prj.update_state(lambda s: s.update(lat=lat, lon=lon))
+    if vals.get("footprint_confirmed") == "no":
+        vals.pop("footprint_confirmed")
+        p = prj.root / "input" / "geo" / "footprint.geojson"
+        if p.exists():
+            p.unlink()                      # the gate now asks for the correct OSM id
+    fp = vals.pop("footprint", None)
+    if fp:
+        m = re.match(r"(way|relation)\D*(\d+)", str(fp).strip())
+        if not m:
+            raise ValueError("footprint must look like way/123 or relation/456")
+        data = sources.osm_element_full(m.group(1), int(m.group(2)))
+        nodes = {e["id"]: e for e in data["elements"] if e["type"] == "node"}
+        way = next(e for e in data["elements"] if e["type"] == "way")
+        ring = [(nodes[n]["lon"], nodes[n]["lat"]) for n in way["nodes"] if n in nodes]
+        prj.write_json("input/geo/footprint.geojson", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": dict(way.get("tags", {}), osm_type=m.group(1), osm_id=int(m.group(2)),
+                                                  l3d_match_method="user_osm_id", l3d_match_score=1.0),
+            "geometry": {"type": "Polygon", "coordinates": [ring]}}]})
+    prj.update_state(lambda s: s["user_inputs"].update({k: v for k, v in vals.items() if v not in (None, "")}))
+    items = missing_items(prj)
+    prj.update_state(lambda s: s.update(missing=items))
+    if not items and prj.state()["phases"]["completion"]["status"] == "blocked":
+        prj.set_phase("completion", "pending", "user data received")
+    return items
