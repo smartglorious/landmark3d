@@ -167,4 +167,14 @@ def build(prj: Project, timeout: int = 1800) -> dict:
         return {"ok": False, "errors": [f"Blender exited with code {_exit_code(code)}", *(res or {}).get("errors", []), tail]}
     if not res:
         return {"ok": False, "errors": ["Blender did not produce a result", tail]}
+    glb = Path(job["out"]["glb"])
+    if res.get("ok") and job.get("texture_container") == "ktx2" and glb.is_file():
+        from . import ktx2
+        tk = toktx_path()
+        res["ktx2"] = ktx2.embed_file(glb, tk) if tk else {"container": "fallback", "reason": "toktx not found"}
+        res["bytes"] = glb.stat().st_size
+        budget = int(spec["budgets"].get("bytes_max", 0) or 0)
+        if budget and res["bytes"] >= budget:                  # the fallback stays in the file, so KTX2 adds bytes
+            res.setdefault("warnings", []).append(f"GLB {res['bytes']} bytes with KTX2 copies >= budget {budget}")
+        prj.write_json("reports/build_result.json", res)
     return res
