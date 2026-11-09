@@ -524,11 +524,13 @@ def extract_json(text: str):
 
 
 def ask_json(provider: Provider, system: str, prompt: str, validator=None, web_search=False, images=None, retries=1,
-             accept_invalid=False):
+             accept_invalid=False, repair=None):
     """Ask for JSON; validate with validator(obj) -> list[str] errors; retry with the errors.
 
     accept_invalid: after the last retry, return the last well-formed object anyway (schema-valid only), with the
-    remaining errors in res.validation_errors, so the caller can show them instead of discarding the answer."""
+    remaining errors in res.validation_errors, so the caller can show them instead of discarding the answer.
+
+    repair: corrects what the tool can fix by itself before the answer is checked, so it costs no extra AI call."""
     last_err = None
     last_ok = None
     p = prompt
@@ -536,7 +538,7 @@ def ask_json(provider: Provider, system: str, prompt: str, validator=None, web_s
     step = sys._getframe(1).f_code.co_name                   # the pipeline step asking: massing, judge, facade_pass...
     request = log.new_request() if log else 0
 
-    def note(attempt, outcome, started, res=None, check_started=None, errors=()):
+    def note(attempt, outcome, started, res=None, check_started=None, errors=(), repaired=False):
         if log:
             now = time.perf_counter()
             log.record({"step": step, "request": request, "attempt": attempt, "max_attempts": retries + 1,
@@ -545,7 +547,7 @@ def ask_json(provider: Provider, system: str, prompt: str, validator=None, web_s
                         "provider": getattr(res, "provider", provider.name), "model": getattr(res, "model", None),
                         "images": len(images or []), "prompt_chars": len(p),
                         "reply_chars": len(res.text) if res else 0, "errors": [str(e)[:200] for e in list(errors)[:8]],
-                        **(getattr(res, "meta", None) or {})})
+                        "repaired": repaired, **(getattr(res, "meta", None) or {})})
 
     for attempt in range(1, retries + 2):
         started = time.perf_counter()
@@ -562,8 +564,10 @@ def ask_json(provider: Provider, system: str, prompt: str, validator=None, web_s
             p = prompt + f"\n\nYour previous reply was not valid JSON ({last_err}). Reply with one JSON object only."
             continue
         check_started = time.perf_counter()
+        fixed = repair(obj) if repair else obj
+        repaired, obj = fixed != obj, fixed
         errs = validator(obj) if validator else []
-        note(attempt, "rejected" if errs else "ok", started, res, check_started, errs)
+        note(attempt, "rejected" if errs else "ok", started, res, check_started, errs, repaired)
         if not errs:
             res.validation_errors = []
             return obj, res

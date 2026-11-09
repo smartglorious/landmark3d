@@ -223,7 +223,7 @@ def build_spec(prj: Project) -> dict:
                         + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts))
 
             massing, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=massing_check,
-                                       images=photos + sat_imgs, retries=2, accept_invalid=True)
+                                       images=photos + sat_imgs, retries=2, accept_invalid=True, repair=repair_answer)
             if getattr(res, "validation_errors", None):
                 ai_notes_extra = [f"AI could not fix: {e}" for e in res.validation_errors[:6]]
             else:
@@ -600,7 +600,7 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
             # structure / material errors are fixed inside the same round (retries), so every round is a real
             # photo comparison rather than a repair of the previous answer
             obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=review_check,
-                                   images=sheets, retries=3)
+                                   images=sheets, retries=3, repair=repair_answer)
         except Exception as exc:
             entry["result"] = f"review failed, kept the previous model: {exc}"[:400]
             log.append(entry)
@@ -811,6 +811,18 @@ def sanitize_facades(massing: dict) -> dict:
             p = dict(p, facade=fac)
         parts.append(p)
     return dict(massing, parts=parts)
+
+
+def repair_answer(answer: dict) -> dict:
+    """Facade values the tool corrects itself in an AI answer, before it is checked: one thin part with a storey below
+    the minimum would otherwise send the whole model back to the AI. An answer of the wrong shape is left to the check."""
+    parts = answer.get("parts") if isinstance(answer, dict) else None
+    if not isinstance(parts, list) or not all(isinstance(p, dict) for p in parts):
+        return answer
+    try:
+        return sanitize_facades(answer)
+    except (TypeError, ValueError):
+        return answer
 
 
 def prune_materials(massing: dict) -> dict:

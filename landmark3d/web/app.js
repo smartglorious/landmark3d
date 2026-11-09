@@ -79,13 +79,19 @@ async function viewProject(id, fromPoll) {
   const st = d.state;
   const cur = d.phases.find(p => !['done', 'approved'].includes(st.phases[p.id].status));
   const curStatus = cur ? st.phases[cur.id].status : 'complete';
+  if (fromPoll && d.running && document.getElementById('phases')) {    // only what changes: the page stays where it is
+    patchRunning(id, d, cur);
+    pollTimer = setTimeout(() => viewProject(id, true), 2000);
+    return;
+  }
+  const keepY = fromPoll ? window.scrollY : null;
+  if (fromPoll) $app.style.minHeight = `${$app.offsetHeight}px`;       // the textures load later: no jump meanwhile
   $app.innerHTML = `
   <h1>${esc(st.name)} <span class="muted">— ${esc(st.location)}</span></h1>
   <div class="row" style="align-items:flex-start">
     <div class="card" style="flex:0 0 360px">
       <h2>Các bước</h2>
-      <ul class="phases">${d.phases.map((p, i) => `<li><div class="grow">${esc(p.title)}<div class="msg">${esc(st.phases[p.id].message || '')}</div></div>
-        <div class="phase-side">${chip(st.phases[p.id].status)}${canReopen(d, p, i) ? `<button class="mini" data-reopen="${esc(p.id)}">Quay lại</button>` : ''}</div></li>`).join('')}</ul>
+      <ul class="phases" id="phases">${phasesHtml(d)}</ul>
       <div id="reopen-box"></div>
       <p class="row"><button class="primary" id="run" ${d.running ? 'disabled' : ''}>${d.running ? 'Đang chạy…' : 'Chạy tiếp'}</button>
         <button id="budgets-btn">Giới hạn output</button>
@@ -97,10 +103,14 @@ async function viewProject(id, fromPoll) {
   </div>
   <div class="card" id="satellite"></div>
   <div class="card" id="textures"></div>
-  <div class="card"><h2>Nhật ký</h2><pre class="log">${d.events.map(e => esc(`${e.t}  ${e.msg}${e.data ? '  ' + JSON.stringify(e.data).slice(0, 200) : ''}`)).join('\n')}</pre></div>`;
-  renderTextures(id, d);
+  <div class="card"><h2>Nhật ký <span class="muted">(mới nhất ở trên)</span></h2><pre class="log" id="log">${esc(logText(d))}</pre></div>`;
+  Promise.resolve(renderTextures(id, d)).catch(() => {}).finally(() => {
+    $app.style.minHeight = '';
+    if (keepY !== null) window.scrollTo(0, keepY);
+  });
   renderSatellite(id, d);
   if (!fromPoll) requestAnimationFrame(() => window.scrollTo(0, 0));
+  else window.scrollTo(0, keepY);
   document.getElementById('run').onclick = async () => { await api('POST', `/api/projects/${id}/run`); viewProject(id); };
   document.getElementById('budgets-btn').onclick = () => renderBudgets(id, st.budgets);
   bindStageControls(id, d);
@@ -117,6 +127,28 @@ async function viewProject(id, fromPoll) {
   if (d.has_glb && (cur?.id === 'build_review' || cur?.id === 'release_review' || !cur)) mountViewer(`/files/${id}/output/model.glb?t=${Date.now()}`);
   if (cur?.id === 'spec_review' && d.spec) drawPlan(d.spec, d.spec_polys);
   if (d.running) pollTimer = setTimeout(() => viewProject(id, true), 2000);
+}
+
+const logText = d => [...d.events].reverse().map(e => `${e.t}  ${e.msg}${e.data ? '  ' + JSON.stringify(e.data).slice(0, 200) : ''}`).join('\n');
+
+const phasesHtml = d => d.phases.map((p, i) => `<li><div class="grow">${esc(p.title)}<div class="msg">${esc(d.state.phases[p.id].message || '')}</div></div>
+  <div class="phase-side">${chip(d.state.phases[p.id].status)}${canReopen(d, p, i) ? `<button class="mini" data-reopen="${esc(p.id)}">Quay lại</button>` : ''}</div></li>`).join('');
+
+// While a run is going: new step states and log lines only. Someone reading older lines keeps their place.
+function patchRunning(id, d, cur) {
+  const list = document.getElementById('phases'), html = phasesHtml(d);
+  if (list.dataset.html !== html) { list.innerHTML = html; list.dataset.html = html; }
+  const log = document.getElementById('log'), text = logText(d);
+  if (log.textContent !== text) {
+    const top = log.scrollTop, before = log.scrollHeight;
+    log.textContent = text;
+    log.scrollTop = top > 0 ? top + log.scrollHeight - before : 0;
+  }
+  const stage = document.getElementById('stage'), key = cur ? cur.id : '';
+  if (stage.dataset.running !== key) {
+    stage.dataset.running = key;
+    stage.innerHTML = `<div class="card"><h2>${esc(cur ? cur.title : 'Đang chạy')}</h2><p class="muted">Đang chạy…</p></div>`;
+  }
 }
 
 // An approval stage can be reopened once the phase before it has finished.
