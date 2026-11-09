@@ -30,7 +30,15 @@ def _prj(pid: str) -> Project:
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (WEB / "index.html").read_text(encoding="utf-8")
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    from . import installer
+    if installer.vendor_ready():               # offline viewer: three.js downloaded by `landmark3d setup`
+        cdn = f"https://unpkg.com/three@{installer.THREE_VERSION}/"
+        html = html.replace(cdn + "build/three.module.js", "/static/vendor/three/build/three.module.js")
+        html = html.replace(cdn + "examples/jsm/", "/static/vendor/three/examples/jsm/")
+        html = html.replace("</head>", "<script>window.L3D_DRACO='/static/vendor/three/examples/jsm/libs/draco/';"
+                                       "</script>\n</head>")
+    return html
 
 
 # ----------------------------------------------------------------------------- settings / connections

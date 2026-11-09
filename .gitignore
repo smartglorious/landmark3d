@@ -22,3 +22,6 @@ reports/**/*.webp
 *.blend
 *.blend1
 *.glb
+
+# three.js viewer files downloaded by `landmark3d setup` (pinned version, see installer.py)
+landmark3d/web/vendor/

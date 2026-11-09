@@ -18,9 +18,21 @@ def find_blender() -> str | None:
     s = settings_mod.load()
     if s.get("blender_path") and Path(s["blender_path"]).exists():
         return s["blender_path"]
-    cands = sorted(glob.glob(r"C:\Program Files\Blender Foundation\Blender *\blender.exe"), reverse=True)
+    import os
+    import re
+
+    def ver_key(path):
+        m = re.search(r"Blender[ -]?(\d+)\.(\d+)", path)
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    win = []
+    for root in {os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramW6432", r"C:\Program Files")}:
+        win += glob.glob(os.path.join(root, "Blender Foundation", "Blender *", "blender.exe"))
+    win += glob.glob(os.path.expandvars(r"%ProgramFiles(x86)%\Steam\steamapps\common\Blender\blender.exe"))
+    cands = sorted(set(win), key=ver_key, reverse=True)          # newest version first (5.10 > 5.2)
     cands += [shutil.which("blender") or ""]
-    cands += sorted(glob.glob("/Applications/Blender.app/Contents/MacOS/Blender"))
+    cands += sorted(glob.glob("/Applications/Blender*.app/Contents/MacOS/Blender"), key=ver_key, reverse=True)
+    cands += ["/snap/bin/blender", "/var/lib/flatpak/exports/bin/org.blender.Blender", "/usr/bin/blender",
+              "/usr/local/bin/blender", os.path.expanduser("~/blender/blender")]
     for c in cands:
         if c and Path(c).exists():
             return c

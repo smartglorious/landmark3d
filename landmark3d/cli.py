@@ -1,4 +1,4 @@
-"""Command line: python -m landmark3d [serve|doctor|new|run|status|approve]"""
+"""Command line: python -m landmark3d [serve|setup|doctor|new|run|status|approve]"""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +11,8 @@ def main(argv=None):
     s = sub.add_parser("serve", help="start the local web app")
     s.add_argument("--port", type=int, default=8770)
     sub.add_parser("doctor", help="check Blender, MCP, Node, AI connection")
+    su = sub.add_parser("setup", help="download the viewer files, find Blender, run the environment check")
+    su.add_argument("--force", action="store_true", help="download the viewer files again")
     n = sub.add_parser("new", help="create a project")
     n.add_argument("name")
     n.add_argument("location", nargs="?", default="")
@@ -29,6 +31,9 @@ def main(argv=None):
         print(f"Landmark3D web app: http://127.0.0.1:{args.port}")
         serve(port=args.port)
         return
+    if args.cmd == "setup":
+        from . import installer
+        raise SystemExit(installer.main(["--force"] if args.force else []))
     from . import doctor, pipeline
     from .project import Project
     if args.cmd == "doctor":

@@ -379,7 +379,7 @@ async function mountViewer(url) {
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2)); const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 1); scene.add(sun);
   const cam = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.5, 5000);
   const ctl = new OrbitControls(cam, r.domElement);
-  const draco = new DRACOLoader(); draco.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
+  const draco = new DRACOLoader(); draco.setDecoderPath(window.L3D_DRACO || 'https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
   const loader = new GLTFLoader(); loader.setDRACOLoader(draco);
   loader.load(url, g => {
     scene.add(g.scene);

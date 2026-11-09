@@ -4,11 +4,33 @@ Landmark name + location → research (structured sources first, then AI, then t
 
 Design: `../BenThanhMarket3D/docs/TOOL_ARCHITECTURE.md`, input standard `../BenThanhMarket3D/docs/INPUT_DATA_STANDARD.md`.
 
-## Start
+## Install
 
-```powershell
-.\Start-Landmark3D.ps1
-```
+Get the folder (git clone, or download the ZIP from GitHub), then run the installer once.
+
+| | Install | Start |
+|---|---|---|
+| **Windows 10/11** | double-click `install.cmd` | double-click `Landmark3D.cmd` (or the desktop shortcut) |
+| **macOS / Linux** | `./install.sh` | `./start.sh` |
+
+The installer does the following:
+1. Finds **Python 3.11+**. If it is missing, it offers to install it with winget (Windows), Homebrew (macOS) or apt/dnf (Linux).
+2. Creates `.venv` and installs the Python packages at the exact versions in `requirements.lock`.
+3. Finds **Blender 4.2+**, newest version first. If it is missing, it offers to install it with winget, Homebrew (`--cask`) or snap.
+4. Runs `python -m landmark3d setup`:
+   - downloads the 3D viewer's three.js r160 files (MIT) into `landmark3d/web/vendor/`, so the viewer works offline;
+   - stores the Blender path;
+   - runs the environment check.
+5. Windows only: creates a desktop shortcut.
+
+Nothing is installed system-wide without asking. `-Yes` / `--yes` answers yes for unattended installs. Other options: `-NoShortcut`, `-NoBlender`, `-Start` (Windows) and `--no-blender`, `--start` (macOS/Linux). Run the installer again at any time to repair or update an install.
+
+**Optional, for AI research (no API key):** install Claude Code and run `claude auth login`, and/or Codex (`npm install -g @openai/codex`) and run `codex login`; then turn the provider on in the app.
+**Optional, for GLB validation:** Node.js; the app's "Môi trường" page installs the glTF validator.
+
+**Tested:** Windows 11 with Windows PowerShell 5.1, Python 3.13 and Blender 5.2: a fresh copy installs in about 30 s, passes the tests, builds a GLB, and the viewer runs fully offline. **Not tested yet:** macOS, Linux, a machine without Python or Blender (the winget / brew / apt branches), and Blender older than 5.2. Blender 4.2 is the minimum the environment check accepts.
+
+## Start
 
 Opens http://127.0.0.1:8770. First steps in the app:
 1. **Cài đặt**: set your contact (website or e-mail). Wikidata and Wikimedia Commons reject requests without it.
@@ -20,7 +42,7 @@ Opens http://127.0.0.1:8770. First steps in the app:
 3. **Môi trường**: check Blender, the Blender MCP add-on and client config, Node, and optionally install the glTF validator.
 4. **Dự án**: enter a landmark name and location, optionally limits (triangles, GLB size, compression), and start.
 
-CLI: `python -m landmark3d doctor | new "<name>" "<location>" | run <id> | status <id> | approve <id> <phase>`.
+CLI: `python -m landmark3d setup | doctor | new "<name>" "<location>" | run <id> | status <id> | approve <id> <phase>`.
 
 ## Phases and approvals
 

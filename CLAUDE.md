@@ -23,6 +23,7 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
 - `landmark3d/engine/`:
   - `blender_build.py`: runs inside Blender (photo panels drop generated detail on their face).
   - `runner.py`: build and preview jobs.
+- `landmark3d/installer.py`: `setup` command (pinned three.js r160 into `web/vendor/`, Blender discovery, doctor). OS installers: `install.ps1` / `install.cmd` / `install.sh`; launchers `Landmark3D.cmd` / `start.sh`; versions in `requirements.lock`.
 - `landmark3d/server.py` + `web/`: local web app on port 8770. `tests/`: pytest; tests never touch the network (see `tests/conftest.py`).
 
 ## Rules
@@ -39,6 +40,8 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
 
 ## Commands
 ```powershell
+.\install.cmd                                    # or ./install.sh: venv + requirements.lock + Blender + `landmark3d setup`
+.\.venv\Scripts\python.exe -m landmark3d setup     # viewer files (offline three.js), Blender path, environment check
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m landmark3d serve --port 8770
 .\.venv\Scripts\python.exe reports\benchmark\run_benchmark.py --reset "<name filter>"   # sequential, stops on quota

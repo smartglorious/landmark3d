@@ -29,4 +29,4 @@ build-backend = "setuptools.build_meta"
 include = ["landmark3d*"]
 
 [tool.setuptools.package-data]
-landmark3d = ["web/*", "schemas/*.json"]
+landmark3d = ["web/*", "web/vendor/**/*", "schemas/*.json"]
