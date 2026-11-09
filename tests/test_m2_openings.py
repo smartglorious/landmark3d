@@ -132,3 +132,29 @@ def test_the_v1_facade_path_is_unchanged_without_a_builder():
     geom.facade_openings(poly, 0, 12, fac, m1, 10 ** 6)
     geom.facade_openings(poly, 0, 12, fac, m2, 10 ** 6, window_builder=None)
     assert m1.verts == m2.verts and m1.faces == m2.faces
+
+
+def test_previews_used_by_the_judge_carry_the_engine_flag(tmp_path, monkeypatch):
+    """The judge and the photo review look at preview renders. A preview must build the same engine as the model,
+    otherwise a flag-on benchmark would score version 1 geometry."""
+    import json
+    import subprocess
+    from pathlib import Path
+    from landmark3d import doctor, settings
+    from landmark3d.engine import runner
+    from landmark3d.project import Project
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    import importlib
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects"), "detail_engine_v2": True})
+    prj = Project.create("Preview Flag", "X")
+    seen = {}
+
+    def fake_run(cmd, **k):
+        job = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        seen["engine"] = job.get("engine")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "find_blender", lambda: "blender")
+    runner.preview(prj, {"parts": [], "materials": {}, "budgets": {}, "footprint": {"local": []}}, {}, tmp_path / "out")
+    assert seen["engine"] == {"detail_engine_v2": True, "library_version": "1.0.0"}

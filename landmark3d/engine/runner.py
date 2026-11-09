@@ -78,7 +78,10 @@ def preview(prj: Project, spec: dict, views: dict, out_dir: Path, timeout: int =
     for name in views:
         (out_dir / f"{name}.png").unlink(missing_ok=True)
     (out_dir / "preview_result.json").unlink(missing_ok=True)
+    from .. import settings as settings_mod
+    from ..detail import engine as detail_engine
     job = {"spec": spec, "textures": {}, "panels": [], "panel_atlas": None, "preview": True,
+           "engine": detail_engine.engine_settings(settings_mod.load().get("detail_engine_v2", False)),
            "views": list(views), "custom_views": views, "resolution": [960, 640],
            "out": {"glb": str(out_dir / "preview.glb"), "blend": str(out_dir / "preview.blend"),
                    "renders": str(out_dir), "result": str(out_dir / "preview_result.json")}}
