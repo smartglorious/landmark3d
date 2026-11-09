@@ -17,6 +17,7 @@ TOOL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, TOOL_ROOT)
 from landmark3d import geom  # noqa: E402
 from landmark3d.detail import accounting as detail_accounting, engine as detail_engine  # noqa: E402
+from landmark3d.detail import openings as detail_openings  # noqa: E402
 
 
 def srgb_to_linear(c):
@@ -437,12 +438,20 @@ def main():
     base_tris = sum(g.triangles() for _, _, g in meshes)
     left = max(0, tri_budget - base_tris)
     openings_total = 0
+    opening_stats = {}
     for part, poly, gm in meshes:
         share = int(left * (geom.area(poly) / max(1e-6, sum(geom.area(p) for _, p, _ in meshes))))
         detail = geom.facade_detail(poly, part["base_z"], part["base_z"] + part["height"], part.get("facade"), gm,
                                     share // 2, part.get("taper"))
+        win_builder = None
+        fac = part.get("facade") or {}
+        if (job.get("engine") or {}).get("detail_engine_v2") and fac and fac.get("opening_type") != "curtain_wall" \
+                and not geom.is_tapered(part.get("taper")):
+            windows = geom.facade_layout(poly, part["base_z"], part["base_z"] + part["height"], fac)["windows"]
+            win_builder, opening_stats[part["id"]] = detail_openings.builder_for(windows, max(0, share - detail))
         openings_total += geom.facade_openings(poly, part["base_z"], part["base_z"] + part["height"],
-                                               part.get("facade"), gm, max(0, share - detail), part.get("taper"))
+                                               part.get("facade"), gm, max(0, share - detail), part.get("taper"),
+                                               window_builder=win_builder)
     # Details share what is left of the whole budget: a small part such as a tower is often the most ornate one.
     feature_left = max(0, tri_budget - sum(g.triangles() for _, _, g in meshes))
     for part, poly, gm in meshes:
@@ -515,7 +524,11 @@ def main():
               "materials": len(used), "material_names": used, "openings": openings_total, "compression": comp,
               "panels": panels_made, "textured_materials": sorted(job.get("textures", {}).keys()),
               "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
-              "accounting": accounting, "engine": job.get("engine") or {}}
+              "accounting": accounting, "engine": job.get("engine") or {},
+              "openings_lod": {pid: st["lod_counts"] for pid, st in opening_stats.items()},
+              "openings_allocation": {pid: {k: st["allocation"][k] for k in ("added_triangles", "target_utilization",
+                                                                          "low_utilization_reason")}
+                                      for pid, st in opening_stats.items()}}
     json.dump(result, open(out["result"], "w", encoding="utf-8"), indent=2)
     print("L3D_RESULT", json.dumps({k: result[k] for k in ("ok", "triangles", "bytes", "materials")}))
 

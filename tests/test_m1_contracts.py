@@ -68,10 +68,11 @@ def test_the_shipped_library_is_valid_and_versioned():
 
 def test_declared_generators_must_exist():
     lib = copy.deepcopy(registry.load_library())
-    lib["components"][0]["status"] = "implemented"
-    lib["components"][0]["lods"] = [{"level": 0, "generator": "opening_panel"}]
+    comp = registry.component("plinth_string_course", lib)
+    comp["status"] = "implemented"
+    comp["lods"] = [{"level": 0, "generator": "band_panel"}]
     assert any("not registered" in e for e in registry.validate_registry(lib, generators={}))
-    assert registry.validate_registry(lib, generators={"opening_panel": lambda p: None}) == []
+    assert registry.validate_registry(lib, generators={**registry.GENERATORS, "band_panel": lambda p: None}) == []
 
 
 def test_registry_rejects_duplicate_ids_and_bad_parameters():
@@ -85,7 +86,7 @@ def test_registry_rejects_duplicate_ids_and_bad_parameters():
 
 def test_a_planned_component_cannot_claim_lods_yet():
     lib = copy.deepcopy(registry.load_library())
-    lib["components"][0]["lods"] = [{"level": 0, "generator": "x"}]
+    registry.component("plinth_string_course", lib)["lods"] = [{"level": 0, "generator": "x"}]
     assert any("planned" in e for e in registry.validate_registry(lib, generators={"x": None}))
 
 

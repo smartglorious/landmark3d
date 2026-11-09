@@ -774,7 +774,7 @@ def _entrance_spot(edges, per, ent):
     return s0 + ln / 2
 
 
-def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, taper=None):
+def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, taper=None, window_builder=None):
     """Openings per floor (recessed-looking dark panels 5 cm in front of the wall).
 
     facade keys: opening_type rect|arch|square|storefront|curtain_wall, bay_spacing, opening_width, opening_height,
@@ -814,6 +814,10 @@ def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, t
     for win in lay["windows"]:
         if tris >= budget_left:
             break
+        if window_builder is not None:               # a detail-engine assembly replaces the plain panel (M2)
+            tris += window_builder(mesh, win)
+            made += 1
+            continue
         p, t, out, w, h, z0 = win["p"], win["t"], win["o"], win["w"], win["h"], win["z0"]
         shape = arch_outline(w, h) if win["kind"] == "arch" else [(-w / 2, 0), (w / 2, 0), (w / 2, h), (-w / 2, h)]
         cx, cy = p[0] + out[0] * 0.05, p[1] + out[1] * 0.05
