@@ -226,7 +226,7 @@
     },
     {
       "id": "pilaster_profile",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "vertical_articulation",
       "milestone": "M4",
       "style_tags": [
@@ -236,24 +236,31 @@
       ],
       "parameters": {
         "width_m": {
-          "min": 0.3,
+          "min": 0.2,
           "max": 1.5,
           "default": 0.7
         },
         "depth_m": {
-          "min": 0.1,
+          "min": 0.05,
           "max": 0.8,
           "default": 0.3
+        },
+        "height_m": {
+          "min": 0.5,
+          "max": 30.0,
+          "default": 6.0
         }
       },
       "material_slots": [
         "trim"
       ],
-      "lods": [],
-      "planned_lods": [
-        "pilaster_box",
-        "pilaster_capital"
-      ]
+      "lods": [
+        {
+          "level": 0,
+          "generator": "pilaster_profile"
+        }
+      ],
+      "note": "Pilaster with plinth and capital; raises if wider than its face."
     },
     {
       "id": "colonnade_recessed",
@@ -289,7 +296,7 @@
     },
     {
       "id": "balustrade_run",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "horizontal_articulation",
       "milestone": "M4",
       "style_tags": [
@@ -302,19 +309,27 @@
           "min": 0.6,
           "max": 1.6,
           "default": 1.0
+        },
+        "spacing_m": {
+          "min": 0.2,
+          "max": 1.5,
+          "default": 0.55
         }
       },
       "material_slots": [
         "trim"
       ],
-      "lods": [],
-      "planned_lods": [
-        "rail_posts"
-      ]
+      "lods": [
+        {
+          "level": 0,
+          "generator": "balustrade_run"
+        }
+      ],
+      "note": "Top and bottom rails with evenly spaced posts along one face."
     },
     {
       "id": "mansard_dormer",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "roof_skyline",
       "milestone": "M4",
       "style_tags": [
@@ -323,68 +338,93 @@
         "beaux_arts"
       ],
       "parameters": {
+        "width_m": {
+          "min": 0.8,
+          "max": 6.0,
+          "default": 2.0
+        },
         "height_m": {
-          "min": 1.0,
-          "max": 12.0,
-          "default": 5.0
+          "min": 0.8,
+          "max": 4.0,
+          "default": 1.8
+        },
+        "roof_rise_m": {
+          "min": 0.3,
+          "max": 3.0,
+          "default": 1.2
         }
       },
       "material_slots": [
         "roof",
-        "trim",
-        "opening"
+        "trim"
       ],
-      "lods": [],
-      "planned_lods": [
-        "mansard_roof",
-        "dormer_window"
-      ]
+      "lods": [
+        {
+          "level": 0,
+          "generator": "dormer_window"
+        }
+      ],
+      "note": "Dormer with a hipped cap on a mansard roof."
     },
     {
       "id": "clock_rose_window",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "unique_component",
       "milestone": "M4",
       "style_tags": [],
       "parameters": {
-        "diameter_m": {
-          "min": 0.5,
-          "max": 8.0,
-          "default": 2.5
+        "radius_m": {
+          "min": 0.3,
+          "max": 4.0,
+          "default": 1.2
+        },
+        "ring_m": {
+          "min": 0.05,
+          "max": 0.6,
+          "default": 0.2
         }
       },
       "material_slots": [
         "trim",
-        "glass"
+        "opening"
       ],
-      "lods": [],
-      "planned_lods": [
-        "disc_plate",
-        "disc_surround"
-      ]
+      "lods": [
+        {
+          "level": 0,
+          "generator": "rose_window"
+        }
+      ],
+      "note": "Round window with a projecting ring; raises if it does not fit the face."
     },
     {
       "id": "finial_pinnacle",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "unique_component",
       "milestone": "M4",
       "style_tags": [],
       "parameters": {
         "height_m": {
-          "min": 0.5,
+          "min": 0.2,
           "max": 20.0,
           "default": 3.0
+        },
+        "radius_m": {
+          "min": 0.05,
+          "max": 2.0,
+          "default": 0.25
         }
       },
       "material_slots": [
         "trim",
         "roof"
       ],
-      "lods": [],
-      "planned_lods": [
-        "spike",
-        "ball_spike"
-      ]
+      "lods": [
+        {
+          "level": 0,
+          "generator": "finial_pinnacle"
+        }
+      ],
+      "note": "Spike or ball finial on top of a part."
     },
     {
       "id": "brise_soleil_array",
@@ -472,6 +512,94 @@
         }
       ],
       "note": "Rectangular stack with a projecting cap."
+    },
+    {
+      "id": "cupola_lantern",
+      "status": "implemented",
+      "semantic_type": "roof_skyline",
+      "milestone": "M4",
+      "style_tags": [
+        "classical",
+        "beaux_arts"
+      ],
+      "parameters": {
+        "radius_m": {
+          "min": 0.3,
+          "max": 6.0,
+          "default": 1.5
+        }
+      },
+      "material_slots": [
+        "trim",
+        "roof"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "cupola_lantern"
+        }
+      ],
+      "note": "Octagonal lantern with a pyramidal cap."
+    },
+    {
+      "id": "ridge_cap",
+      "status": "implemented",
+      "semantic_type": "roof_skyline",
+      "milestone": "M4",
+      "style_tags": [],
+      "parameters": {
+        "width_m": {
+          "min": 0.1,
+          "max": 1.0,
+          "default": 0.4
+        },
+        "height_m": {
+          "min": 0.05,
+          "max": 0.6,
+          "default": 0.25
+        }
+      },
+      "material_slots": [
+        "trim"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "ridge_cap"
+        }
+      ],
+      "note": "Cap along a straight roof ridge."
+    },
+    {
+      "id": "lattice_mast",
+      "status": "implemented",
+      "semantic_type": "roof_skyline",
+      "milestone": "M4",
+      "style_tags": [
+        "contemporary"
+      ],
+      "parameters": {
+        "width_m": {
+          "min": 0.5,
+          "max": 6.0,
+          "default": 2.0
+        },
+        "brace_every_m": {
+          "min": 1.0,
+          "max": 10.0,
+          "default": 3.0
+        }
+      },
+      "material_slots": [
+        "trim"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "lattice_mast"
+        }
+      ],
+      "note": "Four-legged lattice mast with horizontal bracing."
     }
   ]
 }
