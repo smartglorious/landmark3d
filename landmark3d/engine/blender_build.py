@@ -495,7 +495,12 @@ def main():
     panels_made = add_panels(job, meshes, warnings)
     warnings += detail_materials.architectural_warnings(spec)
     ao_report = None
+    normal_report = None
     engine_cfg = job.get("engine") or {}
+    if engine_cfg.get("bake_normal") and engine_cfg.get("detail_engine_v2"):
+        part_objects, normal_report = engine_bake.bake_normals(part_objects, int(engine_cfg.get("normal_size", 256)),
+                                                               float(engine_cfg.get("normal_ratio", 0.6)), 0.3)
+        warnings += [f"normal bake {p['part']}: {p['result']}" for p in normal_report["parts"] if p["result"] != "baked"]
     if engine_cfg.get("bake_ao") and engine_cfg.get("detail_engine_v2"):
         ao_report = engine_bake.bake_parts(part_objects, int(engine_cfg.get("ao_size", 256)))
         warnings += [f"AO bake {p['part']}: {p['result']}" for p in ao_report["parts"] if p["result"] != "baked"]
@@ -505,6 +510,9 @@ def main():
     if ao_report:
         tex_acc += [{"width": ao_report["size"], "height": ao_report["size"], "material": "ao_" + p["part"]}
                     for p in ao_report["parts"] if p["result"] == "baked"]
+    if normal_report:
+        tex_acc += [{"width": normal_report["size"], "height": normal_report["size"], "material": "normal_" + p["part"]}
+                    for p in normal_report["parts"] if p["result"] == "baked"]
     accounting = detail_accounting.summarize(acc_parts, budgets.get("triangles_target"), budgets.get("triangles_max"),
                                              textures=tex_acc)
     acc_errors = detail_accounting.check(acc_parts, accounting)
@@ -547,7 +555,7 @@ def main():
               "panels": panels_made, "textured_materials": sorted(job.get("textures", {}).keys()),
               "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
               "accounting": accounting, "engine": job.get("engine") or {}, "articulation": articulation_report,
-              "ao": ao_report,
+              "ao": ao_report, "normal": normal_report,
               "openings_lod": {pid: st["lod_counts"] for pid, st in opening_stats.items()},
               "openings_allocation": {pid: {k: st["allocation"][k] for k in ("added_triangles", "target_utilization",
                                                                           "low_utilization_reason")}

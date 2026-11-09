@@ -13,11 +13,14 @@ class DetailEngineError(RuntimeError):
     pass
 
 
-def engine_settings(flag: bool, bake_ao: bool = False, ao_size: int = 256) -> dict:
-    """What a build job records about the engine (plan: persist it in the spec/build job). AO baking is part of the
+def engine_settings(flag: bool, bake_ao: bool = False, ao_size: int = 256, bake_normal: bool = False,
+                    normal_size: int = 256, normal_ratio: float = 0.6) -> dict:
+    """What a build job records about the engine (plan: persist it in the spec/build job). Baking is part of the
     detail engine: it only runs with the flag on."""
     return {"detail_engine_v2": bool(flag), "library_version": registry.LIBRARY_VERSION,
-            "bake_ao": bool(flag and bake_ao), "ao_size": int(ao_size)}
+            "bake_ao": bool(flag and bake_ao), "ao_size": int(ao_size),
+            "bake_normal": bool(flag and bake_normal), "normal_size": int(normal_size),
+            "normal_ratio": float(normal_ratio)}
 
 
 def v2_requests(spec: dict) -> list:
