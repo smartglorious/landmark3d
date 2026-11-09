@@ -77,3 +77,9 @@ def test_non_commercial_projects_may_use_nc_pixels():
     sources = {"NC": {"use": "reference_and_texture", "licence": "cc_by_nc", "author": "y"}}
     mapping, errs = mat.attribution([{"id": "T", "auto": True, "source_id": "NC"}], sources, project_noncommercial=True)
     assert errs == [] and "T" in mapping
+
+
+def test_build_accounting_reports_real_texture_pixels():
+    from landmark3d.detail import accounting
+    acc = accounting.summarize([], textures=[{"width": 1024, "height": 512, "material": "wall"}])
+    assert acc["texture_pixels"] == 1024 * 512 and acc["texture_material_slots"] == ["wall"]

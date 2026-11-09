@@ -484,7 +484,10 @@ def main():
 
     panels_made = add_panels(job, meshes, warnings)
     acc_parts = [detail_accounting.PartMesh(part["id"], gm) for part, _, gm in meshes]
-    accounting = detail_accounting.summarize(acc_parts, budgets.get("triangles_target"), budgets.get("triangles_max"))
+    tex_acc = [{"width": t.get("width", 0), "height": t.get("height", 0), "material": name}
+               for name, t in job.get("textures", {}).items()]
+    accounting = detail_accounting.summarize(acc_parts, budgets.get("triangles_target"), budgets.get("triangles_max"),
+                                             textures=tex_acc)
     acc_errors = detail_accounting.check(acc_parts, accounting)
     errors += acc_errors
 

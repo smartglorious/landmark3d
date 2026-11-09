@@ -109,6 +109,13 @@ def build(prj: Project, timeout: int = 1800) -> dict:
         return {"ok": False, "errors": ["no spec"]}
     from .. import textures as textures_mod
     repeat, panels, atlas = textures_mod.build_job(prj, int(spec["budgets"].get("texture_max_px", 2048)))
+    for tex in repeat.values():                     # real pixel sizes, for the build accounting (M5)
+        try:
+            from PIL import Image
+            with Image.open(tex["file"]) as im:
+                tex["width"], tex["height"] = im.size
+        except (OSError, KeyError):
+            tex["width"] = tex["height"] = 0
     texture_jobs(prj)                                      # marks research photos used as textures (attribution)
     from .. import settings as settings_mod
     from ..detail import engine as detail_engine
