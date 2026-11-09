@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "landmark3d/facade_observations/v1",
+  "title": "Facade observations (input/facade_observations.json)",
+  "description": "Source evidence, not final geometry. Coordinates are normalized photo coordinates, top-left origin.",
+  "type": "object",
+  "required": ["version", "observations"],
+  "properties": {
+    "version": {"const": 1},
+    "observations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/observation"}
+    }
+  },
+  "$defs": {
+    "unit": {"type": "number", "minimum": 0, "maximum": 1},
+    "point": {"type": "array", "items": {"$ref": "#/$defs/unit"}, "minItems": 2, "maxItems": 2},
+    "observation": {
+      "type": "object",
+      "required": ["id", "source_id", "part_id", "quad", "floor_lines", "bay_lines", "elements", "confidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "photo_path": {"type": "string"},
+        "part_id": {"type": "string", "minLength": 1},
+        "facade_run": {"type": "integer", "minimum": 0},
+        "quad": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 4, "maxItems": 4},
+        "camera": {"type": "object", "properties": {
+          "azimuth_deg": {"type": "number"}, "elevation_deg": {"type": "number"}}},
+        "floor_lines": {"type": "array", "items": {"$ref": "#/$defs/unit"}, "minItems": 2},
+        "bay_lines": {"type": "array", "items": {"$ref": "#/$defs/unit"}, "minItems": 2},
+        "elements": {"type": "array", "items": {"$ref": "#/$defs/element"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "review": {"type": "object", "properties": {
+          "status": {"enum": ["proposed", "accepted", "rejected"]},
+          "notes": {"type": "array", "items": {"type": "string"}}}}
+      }
+    },
+    "element": {
+      "type": "object",
+      "required": ["id", "type", "bbox", "floor", "bay", "confidence", "provenance"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "minLength": 1},
+        "bbox": {"type": "array", "items": {"$ref": "#/$defs/unit"}, "minItems": 4, "maxItems": 4},
+        "floor": {"type": "integer", "minimum": 0},
+        "bay": {"type": "integer", "minimum": 0},
+        "symmetry_group": {"type": "string"},
+        "attributes": {"type": "object"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "provenance": {"enum": ["observed", "symmetry", "style_inferred", "source_data", "default"]}
+      }
+    }
+  }
+}

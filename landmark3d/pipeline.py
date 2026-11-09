@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 import re
 import time
 import traceback
 
 from . import doctor, geom, settings as settings_mod, spec as spec_mod
+from .detail import engine as detail_engine, registry as detail_registry
 from .engine import runner as engine_runner
 from .project import PHASES, Project
 from .research import agent, ai
@@ -1007,6 +1009,7 @@ def spec_mod_parse(v):
 
 # ----------------------------------------------------------------------------- release
 def release(prj: Project) -> dict:
+    check_release_identity(prj)
     res = prj.read_json("reports/build_result.json", {})
     files = ["output/model.glb", "blender/model.blend", "spec/landmark_spec.json", "input/sources.json",
              "input/research.json", "reports/build_result.json"] + [f"renders/{r}" for r in res.get("renders", [])]
@@ -1086,6 +1089,7 @@ def _run_phase(prj: Project, phase: str) -> str:
                                          + (f"; {len(errs)} STRUCTURE ERROR(S): fix in A2 (edit spec or request changes)"
                                             if errs else ""))
         elif phase == "build":
+            prj.path("reports", "build_manifest.json").unlink(missing_ok=True)   # a new build replaces the old manifest
             if settings_mod.load().get("auto_textures", True):
                 provider = ai.get("vision")
                 if provider is not None:
@@ -1098,6 +1102,7 @@ def _run_phase(prj: Project, phase: str) -> str:
             if res.get("ok"):
                 prj.set_phase(phase, "done", f"{res['triangles']} triangles, {res['bytes']} bytes, "
                                              f"{len(res.get('renders', []))} renders")
+                write_build_manifest(prj)
             else:
                 prj.set_phase(phase, "failed", "; ".join(res.get("errors", ["build failed"]))[:500])
         elif phase == "release":
@@ -1112,7 +1117,15 @@ def _run_phase(prj: Project, phase: str) -> str:
 
 
 def run_until_blocked(prj: Project) -> dict:
-    """Run automatic phases in order until an approval, a block (missing data) or a failure."""
+    """Run automatic phases in order until an approval, a block (missing data) or a failure. Only one runner works on
+    a project at a time; a second request returns reason "busy" and changes nothing."""
+    with prj.run_lock(blocking=False) as got:
+        if not got:
+            return {"stopped_at": None, "reason": "busy"}
+        return _run_until_blocked(prj)
+
+
+def _run_until_blocked(prj: Project) -> dict:
     for p in PHASES:
         pid = p["id"]
         status = prj.state()["phases"][pid]["status"]
@@ -1136,9 +1149,104 @@ class SpecIssues(ValueError):
         super().__init__("; ".join(i["message"] for i in issues))
 
 
+class ApprovalError(ValueError):
+    """The phase is not waiting for approval, or the phase or decision is not allowed. CLI and API share this rule."""
+
+
+class ReleaseBlocked(RuntimeError):
+    """Packaging refused: no build manifest, or the inputs changed since the build."""
+
+
+ALLOWED_DECISIONS = ("approved", "changes_requested")
+# Versions recorded in every build manifest. Bump COMPONENT_LIBRARY_VERSION with any change to a generator in geom.py.
+COMPONENT_LIBRARY_VERSION = detail_registry.LIBRARY_VERSION
+ALLOCATOR_VERSION = "none-v1"        # M2 adds the complexity allocator; until then no candidates are selected
+
+
+def invalidate_from(prj: Project, phase: str, reason: str) -> None:
+    """A phase's inputs changed: it and every later phase go back to pending, so their results and approvals are
+    no longer trusted. The approval history is kept as it was."""
+    ids = [p["id"] for p in PHASES]
+    for pid in ids[ids.index(phase):]:
+        if prj.state()["phases"][pid]["status"] != "pending":
+            prj.set_phase(pid, "pending", reason)
+
+
+def _digest(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()[:20]
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:20] if path.is_file() else "absent"
+
+
+_blender_version_cache: dict = {}
+
+
+def _blender_version() -> str:
+    if "v" not in _blender_version_cache:
+        exe = doctor.find_blender()
+        text = "none"
+        if exe:
+            try:
+                import subprocess
+                p = subprocess.run([exe, "-b", "--factory-startup", "--version"], stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=120, errors="replace")
+                text = next((ln.strip() for ln in (p.stdout or "").splitlines() if ln.startswith("Blender")), "unknown")
+            except (OSError, subprocess.SubprocessError):
+                text = "unknown"
+        _blender_version_cache["v"] = text
+    return _blender_version_cache["v"]
+
+
+def build_identity(prj: Project) -> dict:
+    """Digests of every input a build depends on (docs/PRODUCTION_BASELINE.md 4.2). A build and its release must agree."""
+    st = prj.state()
+    effective = {k: st.get(k) for k in ("name", "location", "lat", "lon", "notes", "advanced_prompt", "budgets")}
+    photos = {}
+    for s in prj.read_json("input/sources.json", {"sources": []})["sources"]:
+        if s.get("kind") == "photo" and s.get("path"):
+            photos[s["id"]] = _file_digest(prj.root / s["path"])
+    return {
+        "state": _digest(effective),
+        "spec": _file_digest(prj.root / "spec" / "landmark_spec.json"),
+        "sources": _file_digest(prj.root / "input" / "sources.json"),
+        "photos": _digest(photos),
+        "textures": _file_digest(prj.root / "input" / "textures.json"),
+        "component_library": _digest({"version": COMPONENT_LIBRARY_VERSION}),
+        "allocator": _digest({"version": ALLOCATOR_VERSION}),
+        "blender_script": _file_digest(Path(__file__).with_name("engine") / "blender_build.py"),
+        "blender": _digest({"version": _blender_version()}),
+        "detail_engine": _digest(detail_engine.engine_settings(settings_mod.load().get("detail_engine_v2", False))),
+    }
+
+
+def write_build_manifest(prj: Project) -> dict:
+    manifest = {"identity": build_identity(prj), "written": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    prj.write_json("reports/build_manifest.json", manifest)
+    return manifest
+
+
+def check_release_identity(prj: Project) -> None:
+    """Refuse to package unless the build manifest describes exactly the inputs on disk now."""
+    manifest = prj.read_json("reports/build_manifest.json")
+    if not manifest:
+        raise ReleaseBlocked("no build manifest: the build must finish before release")
+    now, then = build_identity(prj), manifest.get("identity", {})
+    changed = sorted(k for k in set(now) | set(then) if now.get(k) != then.get(k))
+    if changed:
+        raise ReleaseBlocked("stale build: changed since the build: " + ", ".join(changed) + "; rebuild before release")
+
+
 def approve(prj: Project, phase: str, decision: str, notes: str = "") -> dict:
-    if decision not in ("approved", "changes_requested"):
-        raise ValueError("decision must be approved or changes_requested")
+    ids = [p["id"] for p in PHASES]
+    if phase not in ids:
+        raise ApprovalError(f"unknown phase {phase!r}")
+    if decision not in ALLOWED_DECISIONS:
+        raise ApprovalError("decision must be approved or changes_requested")
+    status = prj.state()["phases"][phase]["status"]
+    if status != "waiting_approval":
+        raise ApprovalError(f"{phase} is {status}, not waiting for approval")
     if decision == "approved" and phase in ("spec_review", "build_review"):
         blocking = spec_blocking_issues(prj)
         if blocking:

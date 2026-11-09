@@ -4,6 +4,8 @@ Landmark name + location → research (structured sources first, then AI, then t
 
 Design: `../BenThanhMarket3D/docs/TOOL_ARCHITECTURE.md`, input standard `../BenThanhMarket3D/docs/INPUT_DATA_STANDARD.md`.
 
+Engineering roadmap: [`docs/DETAIL_ENGINE_V2_PLAN.md`](docs/DETAIL_ENGINE_V2_PLAN.md). Production quality and release gates: [`docs/PRODUCTION_BASELINE.md`](docs/PRODUCTION_BASELINE.md).
+
 ## Install
 
 Get the folder (git clone, or download the ZIP from GitHub), then run the installer once.

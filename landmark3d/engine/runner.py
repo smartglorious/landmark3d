@@ -16,11 +16,15 @@ def texture_jobs(prj: Project) -> dict:
     out = {}
     srcs = prj.read_json("input/sources.json", {"sources": []})
     changed = False
+    noncommercial = bool(prj.state().get("non_commercial"))
     for s in srcs["sources"]:
         mat = s.get("texture_for")
         if not mat or s.get("kind") != "photo":
             continue
         if s.get("use") not in ("reference_and_texture", "texture_permitted"):
+            continue
+        from ..textures import licence_allows
+        if not licence_allows(s.get("licence") or "unknown", noncommercial):
             continue
         out[mat] = {"file": str(prj.root / s["path"]), "world_size_m": float(s.get("world_size_m", 3.0))}
         if not s.get("used_as_texture"):
@@ -103,8 +107,11 @@ def build(prj: Project, timeout: int = 1800) -> dict:
     from .. import textures as textures_mod
     repeat, panels, atlas = textures_mod.build_job(prj, int(spec["budgets"].get("texture_max_px", 2048)))
     texture_jobs(prj)                                      # marks research photos used as textures (attribution)
+    from .. import settings as settings_mod
+    from ..detail import engine as detail_engine
     job = {
         "spec": spec,
+        "engine": detail_engine.engine_settings(settings_mod.load().get("detail_engine_v2", False)),
         "textures": repeat,
         "panels": panels,
         "panel_atlas": atlas,

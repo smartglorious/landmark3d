@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "landmark3d/landmark_spec/v2",
+  "title": "Landmark spec, version 2 (facade_system contract)",
+  "description": "Version 2 keeps parts, footprint, materials and budgets. A part may carry facade_system; the v1 facade object stays as the compatibility input. Repeated elements are stored as grammar plus overrides, never as expanded instances.",
+  "type": "object",
+  "required": ["spec_version", "parts", "materials", "budgets"],
+  "properties": {
+    "spec_version": {"const": 2},
+    "parts": {"type": "array", "items": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "facade_system": {"$ref": "#/$defs/facade_system"}
+      }
+    }},
+    "materials": {"type": "object"},
+    "budgets": {"type": "object"}
+  },
+  "$defs": {
+    "facade_system": {
+      "type": "object",
+      "required": ["style_family", "style_confidence", "runs"],
+      "properties": {
+        "style_family": {"enum": ["classical", "gothic", "modernist", "contemporary", "market_hall", "tiered_roof", "unknown"]},
+        "style_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "runs": {"type": "array", "items": {"$ref": "#/$defs/run"}}
+      },
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "required": ["run", "grammar", "evidence"],
+      "properties": {
+        "run": {"type": "integer", "minimum": 0},
+        "grammar": {"$ref": "#/$defs/grammar"},
+        "overrides": {"type": "array", "items": {"$ref": "#/$defs/override"}},
+        "evidence": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "grammar": {
+      "type": "object",
+      "required": ["floor_zones", "bay_count", "bay_width_m", "symmetry"],
+      "properties": {
+        "floor_zones": {"type": "array", "items": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {"enum": ["ground", "repeat", "cornice", "attic", "band"]},
+            "from": {"type": "integer", "minimum": 0},
+            "to": {"type": "integer", "minimum": 0},
+            "module": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }},
+        "bay_count": {"type": "integer", "minimum": 1, "maximum": 200},
+        "bay_width_m": {"type": "number", "exclusiveMinimum": 0},
+        "symmetry": {"enum": ["mirror", "none"]}
+      },
+      "additionalProperties": false
+    },
+    "override": {
+      "type": "object",
+      "required": ["floor", "bay", "module"],
+      "properties": {
+        "floor": {"type": "integer", "minimum": 0},
+        "bay": {"type": "integer", "minimum": 0},
+        "module": {"type": "string", "minLength": 1},
+        "params": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

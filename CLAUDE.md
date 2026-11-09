@@ -2,6 +2,7 @@
 
 Landmark name + location → researched data pack → AI massing with approval gates → headless Blender build → GLB.
 User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
+Implementation authority: `docs/DETAIL_ENGINE_V2_PLAN.md` and `docs/PRODUCTION_BASELINE.md`.
 
 ## Map
 - `landmark3d/research/`:
@@ -19,12 +20,14 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
   - Facades: `facade_layout`, one bay grid per facade run; `check_facade`.
   - `curtain_wall`, `features`.
 - `landmark3d/spec.py`: spec schema, `check_structure` (support incl. skirt tiers via `support_levels`, cantilevers, decks, orientation, height).
+- Detail Engine v2 contracts (M1, behind `detail_engine_v2`, off by default): `landmark3d/detail/` (types, registry, accounting, flag-gated `engine.expand`), `components/library_v1.json`, `observations.py`, `spec_v2.py`, `facade_grammar.py`, and JSON schemas in `schemas/`.
 - `landmark3d/autotex.py`: automatic textures. `run_v2` does bay tiles on the grid, unique faces, QA, mirror repair, harmonise, swatches.
 - `landmark3d/engine/`:
   - `blender_build.py`: runs inside Blender (photo panels drop generated detail on their face).
   - `runner.py`: build and preview jobs.
 - `landmark3d/installer.py`: `setup` command (pinned three.js r160 into `web/vendor/`, Blender discovery, doctor). OS installers: `install.ps1` / `install.cmd` / `install.sh`; launchers `Landmark3D.cmd` / `start.sh`; versions in `requirements.lock`.
 - `landmark3d/server.py` + `web/`: local web app on port 8770; publisher details in `web/about.json`. `tests/`: pytest; tests never touch the network (see `tests/conftest.py`).
+- `docs/`: production-quality detail-engine plan and measurable release baseline. Read `docs/README.md` before architectural work.
 
 ## Rules
 - **Never commit** `projects/` (licensed photos, the owner's photos, Esri imagery, .blend/.glb) or images under `reports/` (made from them). Scan staged files for keys and emails before pushing.

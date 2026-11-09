@@ -36,7 +36,8 @@ def save(prj: Project, data: dict) -> None:
                                            **({"auto_for": old["auto_for"]} if old.get("auto_for") else {})})
 
 
-def licence_allows(licence: str, project_noncommercial: bool = True) -> bool:
+def licence_allows(licence: str, project_noncommercial: bool = False) -> bool:
+    """CC BY-NC pixels may be exported only from a project explicitly marked non-commercial (production baseline 4.3)."""
     if licence == "cc_by_nc":
         return project_noncommercial
     return licence in TEXTURE_LICENCES

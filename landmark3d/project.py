@@ -1,7 +1,9 @@
 """Project folder, persisted state machine, event log."""
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 import threading
 import time
@@ -9,6 +11,40 @@ import unicodedata
 from pathlib import Path
 
 from . import settings as settings_mod
+
+_run_locks: dict[str, threading.Lock] = {}
+_run_locks_guard = threading.Lock()
+
+
+def _try_file_lock(path: Path):
+    """An OS-level lock on a file, held by one process at a time. The OS releases it when the process ends, so a
+    crash cannot leave a project locked for good. Returns the open file when locked, else None."""
+    fh = open(path, "a+")
+    try:
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except OSError:
+        fh.close()
+        return None
+
+
+def _release_file_lock(fh) -> None:
+    try:
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
 
 # Phase order. approval=True phases stop the run until the user decides.
 PHASES = [
@@ -119,6 +155,30 @@ class Project:
 
     def lock(self) -> threading.RLock:
         return _locks.setdefault(self.id, threading.RLock())
+
+    @contextlib.contextmanager
+    def run_lock(self, blocking: bool = True):
+        """Exclusive right to run the pipeline on this project: one thread in this process and one process overall
+        (the web app, the CLI). Yields True when held. Non-blocking callers get False at once when it is taken."""
+        with _run_locks_guard:
+            tl = _run_locks.setdefault(self.id, threading.Lock())
+        got, fh = False, None
+        while True:
+            if tl.acquire(blocking=False):
+                fh = _try_file_lock(self.path("logs", "run.lock"))
+                if fh is not None:
+                    got = True
+                    break
+                tl.release()
+            if not blocking:
+                break
+            time.sleep(0.05)
+        try:
+            yield got
+        finally:
+            if got:
+                _release_file_lock(fh)
+                tl.release()
 
     def update_state(self, fn) -> dict:
         with self.lock():

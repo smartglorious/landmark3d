@@ -120,6 +120,40 @@ def osm_element_full(osm_type: str, osm_id: int) -> dict:
         return r.json()
 
 
+def _ring_area(ring) -> float:
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]))) / 2.0
+
+
+def assemble_outer_ring(parts) -> list | None:
+    """One closed outline from the outer ways of a multipolygon relation. OSM splits a building's outline into several
+    ways in any order and direction; they are joined where their ends meet. Returns the largest closed ring (first point
+    repeated at the end), or None when no outline can be closed - an unclosed outline is never guessed (docs M0 task 6)."""
+    segs = [[(round(float(x), 9), round(float(y), 9)) for x, y in p] for p in parts if len(p) >= 2]
+    rings = []
+    while segs:
+        cur = segs.pop(0)
+        while cur[0] != cur[-1]:
+            for i, s_ in enumerate(segs):
+                if s_[0] == cur[-1]:
+                    cur, segs = cur + s_[1:], segs[:i] + segs[i + 1:]
+                elif s_[-1] == cur[-1]:
+                    cur, segs = cur + s_[::-1][1:], segs[:i] + segs[i + 1:]
+                elif s_[-1] == cur[0]:
+                    cur, segs = s_ + cur[1:], segs[:i] + segs[i + 1:]
+                elif s_[0] == cur[0]:
+                    cur, segs = s_[::-1] + cur[1:], segs[:i] + segs[i + 1:]
+                else:
+                    continue
+                break
+            else:
+                break                                  # nothing joins: this piece stays open
+        if cur[0] == cur[-1] and len(cur) >= 4:
+            rings.append(cur)
+    if not rings:
+        return None
+    return list(max(rings, key=_ring_area))
+
+
 def footprint_from_osm_object(osm_type: str, osm_id: int) -> dict | None:
     """Footprint of a known OSM way/relation via the OSM API (no Overpass needed)."""
     if osm_type not in ("way", "relation"):
@@ -138,9 +172,10 @@ def footprint_from_osm_object(osm_type: str, osm_id: int) -> dict | None:
     outers = [ways[m["ref"]] for m in rel.get("members", []) if m.get("role") == "outer" and m["ref"] in ways]
     if not outers:
         return None
-    biggest = max(outers, key=lambda w: len(w.get("nodes", [])))
-    return {"osm_type": "relation", "osm_id": osm_id, "tags": rel.get("tags", {}),
-            "ring_lonlat": _way_ring(biggest, nodes)}
+    ring = assemble_outer_ring([[(nodes[n]["lon"], nodes[n]["lat"]) for n in w["nodes"] if n in nodes] for w in outers])
+    if ring is None:
+        return None
+    return {"osm_type": "relation", "osm_id": osm_id, "tags": rel.get("tags", {}), "ring_lonlat": ring}
 
 
 def reverse_geocode(lat: float, lon: float) -> dict | None:
@@ -173,7 +208,9 @@ def buildings_near(lat: float, lon: float, radius_m: int = 120) -> list[dict]:
             outers = [m for m in el.get("members", []) if m.get("role") == "outer" and "geometry" in m]
             if not outers:
                 continue
-            ring = [(p["lon"], p["lat"]) for p in max(outers, key=lambda m: len(m["geometry"]))["geometry"]]
+            ring = assemble_outer_ring([[(p["lon"], p["lat"]) for p in m["geometry"]] for m in outers])
+            if ring is None:
+                continue
         else:
             continue
         if len(ring) < 3:

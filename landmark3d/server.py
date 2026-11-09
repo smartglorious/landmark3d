@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import threading
 from pathlib import Path
@@ -125,11 +126,12 @@ def projects():
 
 @app.post("/api/projects")
 def create_project(body: dict = Body(...)):
-    name = (body.get("name") or "").strip()
+    name = _text(body, "name").strip()
     if not name:
         raise HTTPException(400, "name required")
-    prj = Project.create(name, (body.get("location") or "").strip(), body.get("budgets"),
-                         body.get("lat"), body.get("lon"), body.get("notes", ""))
+    lat, lon = _position(body)
+    budgets = _budgets(body.get("budgets") or {}, dict(settings_mod.load()["default_budgets"]))
+    prj = Project.create(name, _text(body, "location").strip(), budgets, lat, lon, _text(body, "notes"))
     return {"id": prj.id}
 
 
@@ -150,7 +152,7 @@ def project(pid: str):
         "build": prj.read_json("reports/build_result.json"),
         "doctor": prj.read_json("reports/doctor.json"),
         "renders": renders,
-        "has_glb": (prj.root / "output" / "model.glb").exists(),
+        "has_glb": (prj.root / "output" / "model.glb").exists() and st["phases"]["build"]["status"] == "done",
         "events": prj.events(60),
     }
 
@@ -181,24 +183,79 @@ def _running(pid: str) -> bool:
     return pid in _jobs and _jobs[pid].is_alive()
 
 
+_start_lock = threading.Lock()          # check-and-start is one step: concurrent requests start one worker
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+PHOTO_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+REQUEST_DECISIONS = ("approved", "changes_requested")
+
+
+def _refuse_if_running(pid: str) -> None:
+    if _running(pid):
+        raise HTTPException(409, "Dự án đang chạy; chờ xong rồi mới sửa được.")
+
+
+def _text(body: dict, key: str, default: str = "") -> str:
+    v = body.get(key, default)
+    if v is None:
+        return default
+    if not isinstance(v, str):
+        raise HTTPException(422, f"{key} must be text")
+    return v
+
+
+def _position(body: dict):
+    lat, lon = body.get("lat"), body.get("lon")
+    if lat is None and lon is None:
+        return None, None
+    if lat is None or lon is None:
+        raise HTTPException(422, "lat and lon must be given together")
+    out = []
+    for name, v, limit in (("lat", lat, 90), ("lon", lon, 180)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v) > limit:
+            raise HTTPException(422, f"{name} must be a number between -{limit} and {limit}")
+        out.append(float(v))
+    return out[0], out[1]
+
+
+def _budgets(body: dict, current: dict) -> dict:
+    """Validated budget changes: positive numbers, a known compression, and target not above the hard limit."""
+    out = {}
+    for k, v in body.items():
+        if k not in settings_mod.DEFAULT_BUDGETS:
+            continue
+        if k == "compression":
+            if v not in ("draco", "none"):
+                raise HTTPException(422, "compression must be draco or none")
+        elif isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            raise HTTPException(422, f"{k} must be a positive number")
+        out[k] = v
+    merged = {**current, **out}
+    for target, hard in (("triangles_target", "triangles_max"), ("bytes_target", "bytes_max")):
+        if merged.get(target) is not None and merged.get(hard) is not None and merged[target] > merged[hard]:
+            raise HTTPException(422, f"{target} must not exceed {hard}")
+    return out
+
+
 @app.post("/api/projects/{pid}/run")
 def run(pid: str):
     prj = _prj(pid)
-    if _running(pid):
-        return {"started": False, "reason": "already running"}
-    th = threading.Thread(target=_run_bg, args=(prj,), daemon=True)
-    _jobs[pid] = th
-    th.start()
+    with _start_lock:
+        if _running(pid):
+            return {"started": False, "reason": "already running"}
+        th = threading.Thread(target=_run_bg, args=(prj,), daemon=True)
+        _jobs[pid] = th
+        th.start()
     return {"started": True}
 
 
 @app.post("/api/projects/{pid}/reopen")
 def reopen(pid: str, body: dict = Body(...)):
     prj = _prj(pid)
+    phase, notes = _text(body, "phase"), _text(body, "notes")
     if _running(pid):
         raise HTTPException(409, "Dự án đang chạy, chờ xong rồi mới quay lại được.")
     try:
-        return pipeline.reopen(prj, body.get("phase", ""), body.get("notes", ""))
+        return pipeline.reopen(prj, phase, notes)
     except ValueError as exc:
         raise HTTPException(409, str(exc))
 
@@ -206,10 +263,11 @@ def reopen(pid: str, body: dict = Body(...)):
 @app.post("/api/projects/{pid}/restart")
 def restart(pid: str, body: dict = Body(...)):
     prj = _prj(pid)
+    notes, advanced, start = _text(body, "notes"), _text(body, "advanced_prompt"), _text(body, "start", "research")
     if _running(pid):
         raise HTTPException(409, "Dự án đang chạy, chờ xong rồi mới chạy lại được.")
     try:
-        pipeline.restart(prj, body.get("notes", ""), body.get("advanced_prompt", ""), body.get("start", "research"))
+        pipeline.restart(prj, notes, advanced, start)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     return run(pid)
@@ -218,12 +276,17 @@ def restart(pid: str, body: dict = Body(...)):
 @app.post("/api/projects/{pid}/approve")
 def approve(pid: str, body: dict = Body(...)):
     prj = _prj(pid)
-    if prj.state()["phases"].get(body["phase"], {}).get("status") != "waiting_approval":
-        raise HTTPException(409, "this phase is not waiting for approval")
+    phase, decision, notes = body.get("phase"), body.get("decision"), _text(body, "notes")
+    if not isinstance(phase, str) or phase not in [p["id"] for p in PHASES]:
+        raise HTTPException(422, "unknown phase")
+    if decision not in REQUEST_DECISIONS:
+        raise HTTPException(422, "decision must be approved or changes_requested")
     try:
-        return pipeline.approve(prj, body["phase"], body["decision"], body.get("notes", ""))
+        return pipeline.approve(prj, phase, decision, notes)
     except pipeline.SpecIssues as exc:
         raise HTTPException(409, "Kế hoạch còn lỗi kết cấu, chưa duyệt được: " + str(exc))
+    except pipeline.ApprovalError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.post("/api/projects/{pid}/inputs")
@@ -240,8 +303,15 @@ async def upload_photo(pid: str, file: UploadFile = File(...), licence: str = Fo
     prj = _prj(pid)
     srcs = prj.read_json("input/sources.json", {"sources": []})
     n = sum(1 for s in srcs["sources"] if s.get("origin") == "user") + 1
+    _refuse_if_running(pid)
     ext = Path(file.filename or "photo.jpg").suffix.lower() or ".jpg"
-    data = file.file.read()
+    if ext not in PHOTO_TYPES:
+        raise HTTPException(415, "photos must be jpg, png, webp or tiff")
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"photo larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    if not data:
+        raise HTTPException(400, "empty file")
     digest = hashlib.sha256(data).hexdigest()
     for s in srcs["sources"]:
         f = prj.root / s.get("path", "")
@@ -254,6 +324,7 @@ async def upload_photo(pid: str, file: UploadFile = File(...), licence: str = Fo
                             "author": author, "licence": licence, "note": note, "origin": "user",
                             "use": "reference_and_texture" if texture_ok else "reference_only"})
     prj.write_json("input/sources.json", srcs)
+    pipeline.invalidate_from(prj, "spec", f"photo {rel} added: the plan is made again")
     items = pipeline.missing_items(prj)
     prj.update_state(lambda s: s.update(missing=items))
     if not items and prj.state()["phases"]["completion"]["status"] == "blocked":
@@ -264,16 +335,26 @@ async def upload_photo(pid: str, file: UploadFile = File(...), licence: str = Fo
 @app.put("/api/projects/{pid}/sources/{sid}")
 def put_source(pid: str, sid: str, body: dict = Body(...)):
     prj = _prj(pid)
+    _refuse_if_running(pid)
     srcs = prj.read_json("input/sources.json", {"sources": []})
     for s in srcs["sources"]:
         if s.get("id") == sid:
+            old = {k: s.get(k) for k in ("use", "texture_for", "world_size_m", "licence")}
+            if "use" in body and body["use"] not in ("reference_and_texture", "reference_only", "texture_permitted",
+                                                     "excluded"):
+                raise HTTPException(422, "use must be reference_and_texture, reference_only, texture_permitted or excluded")
             for k in ("use", "texture_for", "world_size_m", "licence", "note"):
                 if k in body:
                     s[k] = body[k]
+            from .textures import licence_allows
+            if s.get("texture_for") and s.get("use") in ("reference_and_texture", "texture_permitted")                     and not licence_allows(s.get("licence") or "unknown", bool(prj.state().get("non_commercial"))):
+                raise HTTPException(422, f"licence {s.get('licence')} does not allow texture use in this project")
             if s.get("texture_for") and s.get("use") == "reference_only":
                 raise HTTPException(400, "licence does not allow texture use; set use=texture_permitted after "
                                          "recording permission")
             prj.write_json("input/sources.json", srcs)
+            if old != {k: s.get(k) for k in old}:
+                pipeline.invalidate_from(prj, "build", f"source {sid} changed: build again")
             return s
     raise HTTPException(404, "source not found")
 
@@ -339,14 +420,18 @@ async def add_texture(pid: str, file: UploadFile | None = File(None), source_id:
                                  z1=float(z1) if z1 else None, crop=crop_v)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    pipeline.invalidate_from(prj, "build", "texture added: build again")
     return entry
 
 
 @app.delete("/api/projects/{pid}/textures/{tid}")
 def delete_texture(pid: str, tid: str):
     from . import textures as textures_mod
-    if not textures_mod.remove(_prj(pid), tid):
+    prj = _prj(pid)
+    _refuse_if_running(pid)
+    if not textures_mod.remove(prj, tid):
         raise HTTPException(404, "texture not found")
+    pipeline.invalidate_from(prj, "build", "texture removed: build again")
     return {"ok": True}
 
 
@@ -366,6 +451,7 @@ def rebuild(pid: str):
 @app.put("/api/projects/{pid}/spec")
 def put_spec(pid: str, body: dict = Body(...)):
     prj = _prj(pid)
+    _refuse_if_running(pid)
     sp = body["spec"]
     errs = spec_mod.validate_massing({"parts": sp.get("parts", []), "materials": sp.get("materials", {})})
     if errs:
@@ -375,14 +461,19 @@ def put_spec(pid: str, body: dict = Body(...)):
                                             pipeline.merged_facts(prj))
     prj.write_json("spec/landmark_spec.json", sp)
     prj.log("spec edited by the user")
+    pipeline.invalidate_from(prj, "spec_review", "plan edited: approve it again")
     return {"ok": True, "estimated_triangles": sp["estimated_triangles"], "issues": sp["issues"]}
 
 
 @app.put("/api/projects/{pid}/budgets")
 def put_budgets(pid: str, body: dict = Body(...)):
     prj = _prj(pid)
-    keys = set(settings_mod.DEFAULT_BUDGETS)
-    st = prj.update_state(lambda s: s["budgets"].update({k: v for k, v in body.items() if k in keys}))
+    _refuse_if_running(pid)
+    before = dict(prj.state()["budgets"])
+    changes = _budgets(body, before)
+    st = prj.update_state(lambda s: s["budgets"].update(changes))
+    if st["budgets"] != before:
+        pipeline.invalidate_from(prj, "spec_review", "budgets changed: approve the plan again")
     sp = prj.read_json("spec/landmark_spec.json")
     if sp:
         sp["budgets"] = st["budgets"]

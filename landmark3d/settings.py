@@ -39,6 +39,7 @@ DEFAULTS = {
     # correct the model. 0 disables the loop.
     "photo_review_rounds": 3,
     "facade_pass": True,
+    "detail_engine_v2": False,   # M1: contracts only; the flag must stay off until a v2 generator is released
     "facade_review_rounds": 2,  # extra facade rounds driven by the judge's errors (kept only if the score rises)      # AI pass for per-floor facades and detail features after the review rounds
     "judge": True,
     "judge_samples": 3,       # independent readings averaged into each score (one reading moves by a point or more)

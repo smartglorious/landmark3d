@@ -16,6 +16,7 @@ from mathutils import Matrix, Vector
 TOOL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, TOOL_ROOT)
 from landmark3d import geom  # noqa: E402
+from landmark3d.detail import accounting as detail_accounting, engine as detail_engine  # noqa: E402
 
 
 def srgb_to_linear(c):
@@ -399,6 +400,7 @@ def export(path, compression):
 def main():
     job = json.load(open(sys.argv[sys.argv.index("--") + 1], encoding="utf-8"))
     spec = job["spec"]
+    spec = detail_engine.expand(spec, bool((job.get("engine") or {}).get("detail_engine_v2")))
     out = job["out"]
     budgets = spec["budgets"]
     errors, warnings = [], []
@@ -472,6 +474,10 @@ def main():
         ob["l3d_part"] = part["id"]
 
     panels_made = add_panels(job, meshes, warnings)
+    acc_parts = [detail_accounting.PartMesh(part["id"], gm) for part, _, gm in meshes]
+    accounting = detail_accounting.summarize(acc_parts, budgets.get("triangles_target"), budgets.get("triangles_max"))
+    acc_errors = detail_accounting.check(acc_parts, accounting)
+    errors += acc_errors
 
     tris = triangle_count()
     xs = [v[0] for _, _, g in meshes for v in g.verts] or [0]
@@ -508,7 +514,8 @@ def main():
     result = {"ok": not errors, "errors": errors, "warnings": warnings, "triangles": tris, "bytes": size,
               "materials": len(used), "material_names": used, "openings": openings_total, "compression": comp,
               "panels": panels_made, "textured_materials": sorted(job.get("textures", {}).keys()),
-              "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1)}
+              "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
+              "accounting": accounting, "engine": job.get("engine") or {}}
     json.dump(result, open(out["result"], "w", encoding="utf-8"), indent=2)
     print("L3D_RESULT", json.dumps({k: result[k] for k in ("ok", "triangles", "bytes", "materials")}))
 

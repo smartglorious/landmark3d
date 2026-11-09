@@ -142,6 +142,9 @@ def _texture_photos(prj: Project, spec: dict) -> list[tuple[str, dict]]:
     for p in order:
         s = by_path.get(p)
         if s and s.get("use") in ("reference_and_texture", "texture_permitted") and (prj.root / p).is_file():
+            from .textures import licence_allows
+            if not licence_allows(s.get("licence") or "unknown", bool(prj.state().get("non_commercial"))):
+                continue                                  # e.g. CC BY-NC in a commercial project: no exported pixels
             out.append((p, s))
     return out[:6]
 
@@ -322,12 +325,26 @@ def spec_hash(spec: dict) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
+def texture_key(prj: Project, spec: dict) -> str:
+    """Cache key of the automatic textures: the spec plus every source's licence, use and texture role, and the
+    contents of each photo. Changing a permission or a photo therefore rebuilds the textures (docs M0 task 5)."""
+    rows = []
+    for s in prj.read_json("input/sources.json", {"sources": []})["sources"]:
+        row = {k: s.get(k) for k in ("id", "kind", "path", "use", "licence", "texture_for", "author", "origin")}
+        f = prj.root / s["path"] if s.get("path") else None
+        if s.get("kind") == "photo" and f is not None and f.is_file():
+            row["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()
+        rows.append(row)
+    key = json.dumps({"spec": spec_hash(spec), "sources": rows}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def run(prj: Project, provider) -> dict:
     """Auto textures for the current spec (skipped when already made for this exact spec)."""
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = spec_hash(spec)
+    h = texture_key(prj, spec)
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
     obj, photos, faces = plan(prj, provider, spec)
@@ -712,7 +729,7 @@ def run_v2(prj: Project, provider) -> dict:
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = spec_hash(spec) + "-v3"
+    h = texture_key(prj, spec) + "-v3"
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
     obj, photos, ctx = plan_v2(prj, provider, spec)

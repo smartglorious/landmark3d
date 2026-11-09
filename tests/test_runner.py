@@ -14,6 +14,9 @@ class FakeProject:
         self.root = root
         self.events = []
 
+    def state(self):
+        return {}
+
     def path(self, *parts):
         p = self.root.joinpath(*parts)
         p.parent.mkdir(parents=True, exist_ok=True)

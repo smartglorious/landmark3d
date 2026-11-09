@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 
 def main(argv=None):
@@ -54,7 +55,11 @@ def main(argv=None):
             print("missing:", ", ".join(i["id"] for i in stt["missing"]))
     elif args.cmd == "approve":
         prj = Project(args.project)
-        print(pipeline.approve(prj, args.phase, "changes_requested" if args.changes else "approved", args.changes or ""))
+        try:
+            print(pipeline.approve(prj, args.phase, "changes_requested" if args.changes else "approved", args.changes or ""))
+        except pipeline.ApprovalError as exc:                 # the same rule as the web API
+            print(f"not approved: {exc}", file=sys.stderr)
+            raise SystemExit(2)
 
 
 if __name__ == "__main__":

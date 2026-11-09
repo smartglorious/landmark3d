@@ -60,6 +60,7 @@ def test_cannot_reopen_a_stage_not_reached_or_an_automatic_phase(prj):
 
 def test_restart_replaces_instructions_and_forgets_old_change_requests(prj):
     from landmark3d import pipeline
+    prj.set_phase("build_review", "waiting_approval")       # a change request is only accepted while A3 is waiting
     pipeline.approve(prj, "build_review", "changes_requested", "lỗi cũ")
     assert pipeline.change_requests(prj.state()) == ["lỗi cũ"]
     pipeline.restart(prj, " tháp cao hơn ", " dùng mái ngói ")
@@ -68,6 +69,7 @@ def test_restart_replaces_instructions_and_forgets_old_change_requests(prj):
     assert pipeline.change_requests(st) == []
     s = status(prj)
     assert s["doctor"] == "done" and s["research"] == s["sources_review"] == s["spec"] == "pending"
+    prj.set_phase("build_review", "waiting_approval")
     pipeline.approve(prj, "build_review", "changes_requested", "lỗi mới")
     assert pipeline.change_requests(prj.state()) == ["lỗi mới"]
 
