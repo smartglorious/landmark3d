@@ -36,6 +36,7 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
   - Back geometric rules with deterministic checks and tests.
   - Measure on a held-out set run once with the tool frozen.
 - **AI failures** (quota, sign-in) must not be silently replaced by defaults: `ai_failed` blocks A2.
+- **CI** (`.github/workflows/ci.yml`): tests on 3 OS x Python 3.11/3.13, real installers, Blender 4.2 + 5.2 builds. Release: push tag `vX.Y.Z` = pyproject version (`release.yml`).
 - **Restart the server after code changes.** The web server does not reload; the Blender engine is a fresh subprocess each build.
 
 ## Commands
@@ -43,6 +44,7 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
 .\install.cmd                                    # or ./install.sh: venv + requirements.lock + Blender + `landmark3d setup`
 .\.venv\Scripts\python.exe -m landmark3d setup     # viewer files (offline three.js), Blender path, environment check
 .\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts_dev\ci_build_smoke.py    # CI's offline Blender build (synthetic hall -> GLB)
 .\.venv\Scripts\python.exe -m landmark3d serve --port 8770
 .\.venv\Scripts\python.exe reports\benchmark\run_benchmark.py --reset "<name filter>"   # sequential, stops on quota
 .\.venv\Scripts\python.exe reports\benchmark\compare_sheets.py <project-id> ...

@@ -151,6 +151,22 @@ After adding textures, press **Build lại với texture** (needs A2 approved). 
 .\.venv\Scripts\python.exe -m pytest -q tests
 ```
 
+## CI/CD (GitHub Actions)
+
+`.github/workflows/ci.yml` runs on every push to `main`, on every pull request, and when started by hand. It has three jobs:
+- **tests:** pytest on Windows, macOS and Linux, with Python 3.11 and 3.13, using the pinned `requirements.lock`.
+- **installer:** runs the real `install.ps1` / `install.sh` on a clean Windows, macOS and Ubuntu runner (Blender skipped). It then checks that the viewer files were downloaded, that the tests pass in the installed `.venv`, and that the web app serves three.js from local files.
+- **blender build:** downloads Blender 4.2 LTS (the oldest supported version) and Blender 5.2 on Ubuntu. Each one builds a synthetic hall headless with `scripts_dev/ci_build_smoke.py` (no network, no AI) and checks the GLB. The GLB and renders are uploaded as a run artifact.
+
+`.github/workflows/release.yml` publishes a GitHub Release when you push a tag that matches the version in `pyproject.toml`. It tests first, then attaches:
+- `landmark3d-X.Y.Z.zip`: the app folder with the viewer files included;
+- the wheel and sdist;
+- `SHA256SUMS.txt`.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
 ## Known limits
 
 - AI over web login was tested live here (Claude Code on a Claude Pro account, Codex on a ChatGPT account, web search on). The environment-variable route uses the official SDKs and is tested only with fakes (no such variables on this machine).

@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  # Unit tests (no network, no Blender, no AI) on every supported Python and OS.
+  tests:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install (pinned versions)
+        run: python -m pip install -c requirements.lock -e ".[dev]"
+      - name: Byte-compile
+        run: python -m compileall -q landmark3d scripts_dev
+      - name: Tests
+        shell: bash
+        run: LANDMARK3D_HOME="$RUNNER_TEMP/l3d_home" python -m pytest -q
+
+  # The real installers, the way a user runs them, on a clean runner (Blender skipped: the build job covers it).
+  installer:
+    name: installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          LANDMARK3D_HOME: ${{ runner.temp }}\l3d_home
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -NoShortcut -NoBlender
+      - name: Run install.sh
+        if: runner.os != 'Windows'
+        env:
+          LANDMARK3D_HOME: ${{ runner.temp }}/l3d_home
+        run: ./install.sh --yes --no-blender
+      - name: Check the installed environment
+        shell: bash
+        env:
+          LANDMARK3D_HOME: ${{ runner.temp }}/l3d_home
+        run: |
+          if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          $PY -c "from landmark3d import installer; assert installer.vendor_ready(), 'three.js not vendored'; print('viewer files OK')"
+          $PY -m landmark3d --help > /dev/null
+          $PY -m pip install -q -c requirements.lock pytest
+          $PY -m pytest -q
+      - name: Serve the offline viewer
+        shell: bash
+        env:
+          LANDMARK3D_HOME: ${{ runner.temp }}/l3d_home
+        run: |
+          if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          $PY -m landmark3d serve --port 8790 > serve.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8790/ -o index.html && break; sleep 1; done
+          grep -q "/static/vendor/three/build/three.module.js" index.html || { cat serve.log; echo "importmap does not use the local three.js"; exit 1; }
+          curl -sf -o /dev/null http://127.0.0.1:8790/static/vendor/three/build/three.module.js
+          curl -sf -o /dev/null http://127.0.0.1:8790/static/vendor/three/examples/jsm/libs/draco/draco_decoder.wasm
+          echo "viewer served from local files"
+
+  # Headless Blender build of a synthetic building -> GLB, on the oldest supported Blender and the newest.
+  blender-build:
+    name: blender build (Blender ${{ matrix.blender }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - blender: "4.2.23"
+            series: "4.2"
+          - blender: "5.2.3"
+            series: "5.2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: System libraries for headless Blender
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libgl1 libegl1 libglx-mesa0 libgl1-mesa-dri libxi6 libxxf86vm1 \
+            libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6
+      - name: Cache Blender
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: ~/blender-dist
+          key: blender-${{ matrix.blender }}-linux-x64
+      - name: Download Blender ${{ matrix.blender }}
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/blender-dist
+          curl -fsSL "https://download.blender.org/release/Blender${{ matrix.series }}/blender-${{ matrix.blender }}-linux-x64.tar.xz" \
+            | tar -xJ -C ~/blender-dist --strip-components=1
+      - name: Install (pinned versions)
+        run: python -m pip install -c requirements.lock -e .
+      - name: Environment check
+        env:
+          LANDMARK3D_HOME: ${{ runner.temp }}/l3d_doctor
+        run: |
+          python -c "from landmark3d import settings; import os; settings.update({'blender_path': os.path.expanduser('~/blender-dist/blender')})"
+          xvfb-run -a python -m landmark3d doctor
+      - name: Build a GLB
+        env:
+          LANDMARK3D_HOME: ${{ runner.temp }}/l3d_build
+          L3D_CI_OUT: ${{ runner.temp }}/l3d_out
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" python scripts_dev/ci_build_smoke.py --blender ~/blender-dist/blender
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-build-blender-${{ matrix.blender }}
+          path: ${{ runner.temp }}/l3d_out
+          if-no-files-found: ignore
+          retention-days: 14
