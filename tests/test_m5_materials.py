@@ -83,3 +83,8 @@ def test_build_accounting_reports_real_texture_pixels():
     from landmark3d.detail import accounting
     acc = accounting.summarize([], textures=[{"width": 1024, "height": 512, "material": "wall"}])
     assert acc["texture_pixels"] == 1024 * 512 and acc["texture_material_slots"] == ["wall"]
+
+
+def test_texel_density_warnings_are_per_part_and_name_the_spread():
+    warns = mat.texel_warnings({"wing": [100.0, 150.0], "tower": [50.0, 180.0], "plinth": [90.0]})
+    assert len(warns) == 1 and warns[0].startswith("tower:") and "50-180" in warns[0]

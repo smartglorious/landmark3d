@@ -717,11 +717,20 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
                         "licence": src.get("licence"), "author": src.get("author", ""), "source_id": src.get("id"),
                         "part": None, "side": None, "z0": None, "z1": None, "crop": None})
     prj.write_json("input/textures.json", {"textures": manual + entries, "auto_for": h})
+    from .detail import materials as detail_materials
+    dens: dict = {}
+    for it in items:
+        length = float(it["face"].get("length_m") or 0)
+        if length > 0 and it["img"].width > 0:
+            dens.setdefault(it["face"]["part"], []).append(detail_materials.texel_density(it["img"].width, length))
     res = {"bay_faces": sum(1 for it in items if it["kind"] == "bays"),
            "unique_faces": sum(1 for it in items if it["kind"] == "unique"),
            "swatches": sum(1 for e in entries if e["mode"] == "repeat")}
     if rejected:
         res["rejected"] = rejected
+    texel = detail_materials.texel_warnings(dens)
+    if texel:
+        res["texel_warnings"] = texel
     return res
 
 

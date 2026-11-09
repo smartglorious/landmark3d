@@ -387,6 +387,7 @@ function renderApproval(stage, id, cur, d) {
         <p><b>${r.step === 'viewpoints' ? 'Nhận diện góc chụp (A–H)' : r.step === 'select' ? 'Chọn phương án tốt nhất' : r.step === 'facade' ? 'Mặt đứng & chi tiết (AI)' : 'Vòng ' + r.round}</b>: ${r.verdict === 'match' ? '<span class="okc">khớp</span>' : esc(r.verdict || r.result || '')}
         ${(r.differences || []).length ? `<ul>${r.differences.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</p>
         <div class="row">${(r.images || []).map(im => `<a href="/files/${id}/${esc(im)}" target="_blank"><img src="/files/${id}/${esc(im)}" style="max-width:420px;border:1px solid var(--line);border-radius:4px"></a>`).join('')}</div>`).join('')}` : ''}
+      ${(sp.observations || []).length ? `<h3>Quan sát mặt đứng (AI, từng ảnh)</h3><ul>${sp.observations.map(o => `<li>${esc(o.photo)}: ${esc(o.result)}${o.observations ? ` (${esc(String(o.observations))} quan sát)` : ''}</li>`).join('')}</ul><p class="muted">Quan sát chỉ kiểm tra lưới ô; chưa dùng để dựng hình học. Gán ảnh với khối sẽ làm ở bước sau.</p>` : ''}
       <details><summary>Sửa spec (JSON)</summary><textarea id="spec-json" rows="18">${esc(JSON.stringify(sp, null, 2))}</textarea>
       <button id="spec-save">Lưu spec</button> <span id="spec-msg"></span></details>`;
   } else {
@@ -413,6 +414,9 @@ function buildPanel(id, d) {
     ${b.materials} vật liệu · nén ${esc(b.compression)} · ${b.openings} ô cửa · ${b.panels ?? 0} mặt dán ảnh ·
     texture lặp: ${esc((b.textured_materials || []).join(', ') || 'không')} · render ${esc(b.render_engine)}</p>
     ${(b.errors || []).map(e => `<p class="err">${esc(e)}</p>`).join('')}${(b.warnings || []).map(e => `<p class="muted">${esc(e)}</p>`).join('')}
+    ${b.accounting ? `<p class="muted">Tam giác theo loại: ${Object.entries(b.accounting.by_category).map(([k, v]) => `${esc(k)} ${esc(String(v))}`).join(' · ')}${b.accounting.target_utilization != null ? ` · ${Math.round(b.accounting.target_utilization * 100)}% mục tiêu` : ''}</p>` : ''}
+    ${b.articulation && (b.articulation.placed || []).length ? `<p class="muted">Chi tiết kiến trúc đã đặt: ${esc(b.articulation.placed.join(', '))}</p>` : ''}
+    ${b.articulation && (b.articulation.skipped || []).length ? `<p class="err">Bỏ qua: ${esc(b.articulation.skipped.join('; '))}</p>` : ''}
     <div id="viewer"></div>
     <p><a href="/files/${id}/output/model.glb" download>Tải GLB</a> · <a href="/files/${id}/blender/model.blend" download>.blend</a>
       ${d.state.phases.release.status === 'done' ? ` · <a href="/files/${id}/reports/release_notes.md" target="_blank">release notes</a>` : ''}</p>

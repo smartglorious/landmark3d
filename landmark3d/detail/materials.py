@@ -58,6 +58,17 @@ def density_ratio_ok(densities: list[float]) -> bool:
     return max(pos) / min(pos) <= TEXEL_RATIO_MAX
 
 
+def texel_warnings(densities_by_part: dict) -> list[str]:
+    """Faces of one part with texel densities more than 2x apart: a warning per part (production baseline 5.4).
+    Only faces of the same part are compared, since the baseline speaks of neighbouring, equally visible faces."""
+    out = []
+    for part, dens in sorted(densities_by_part.items()):
+        if not density_ratio_ok(dens):
+            out.append(f"{part}: texel density differs more than {TEXEL_RATIO_MAX:g}x between its faces "
+                       f"({min(d for d in dens if d > 0):.0f}-{max(dens):.0f} px/m)")
+    return out
+
+
 def padding_ok(padding_px: int, tile_w: int, tile_h: int, mip_levels: int) -> bool:
     """Atlas padding must survive the mip levels: a tile loses about one texel of padding per level."""
     if tile_w <= 0 or tile_h <= 0 or mip_levels < 0:
