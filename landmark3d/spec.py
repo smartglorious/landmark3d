@@ -57,7 +57,15 @@ PART_SCHEMA = {
         "height": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000},
         "roof": {"type": "object", "required": ["type"], "properties": {
             "type": {"enum": ROOF_TYPES}, "height": {"type": "number", "minimum": 0},
-            "ridge_axis": {"enum": ["long", "short"]}, "parapet": {"type": "number", "minimum": 0}}},
+            "ridge_axis": {"enum": ["long", "short"]}, "parapet": {"type": "number", "minimum": 0},
+            "overhang": {"type": "number", "minimum": 0, "maximum": 4},
+            "upturn": {"type": "number", "minimum": 0, "maximum": 3},
+            "skirts": {"type": "array", "maxItems": 3, "items": {
+                "type": "object", "required": ["depth", "rise"], "properties": {
+                    "depth": {"type": "number", "exclusiveMinimum": 0.2, "maximum": 20},
+                    "rise": {"type": "number", "minimum": 0, "maximum": 15},
+                    "gap": {"type": "number", "minimum": 0, "maximum": 15},
+                    "overhang": {"type": "number", "minimum": 0, "maximum": 4}}}}}},
         "cantilever_of": {"type": "string"},
         "features": {"type": "array", "maxItems": 40, "items": {
             "type": "object", "required": ["type"],
@@ -187,6 +195,23 @@ def _top(part) -> float:
     return float(part["base_z"]) + float(part["height"])
 
 
+def support_levels(part, poly) -> list[tuple]:
+    """(base_z, top_z, outline, taper) of everything a part offers to stand on: its walls, then each skirt tier's
+    upper walls on the inset outline (a clock storey stands on a market hall's upper tier, a pagoda storey on the one
+    below)."""
+    levels = [(float(part["base_z"]), _top(part), poly, part.get("taper"))]
+    if geom.is_tapered(part.get("taper")):
+        return levels
+    ring, z = geom.ensure_ccw(poly), _top(part)
+    for s in geom.roof_skirts(part.get("roof")):
+        inner, per_edge = geom.inward_offset(ring, s["depth"])
+        if inner is None or not geom.offset_is_valid(ring, inner, per_edge):
+            break
+        levels.append((z + s["rise"], z + s["rise"] + s["gap"], inner, None))
+        ring, z = inner, z + s["rise"] + s["gap"]
+    return levels
+
+
 def check_structure(parts, main_poly, facts: dict | None = None) -> list[dict]:
     """Physical sanity of a massing: every part stands on the ground inside the footprint or on another part.
 
@@ -226,11 +251,16 @@ def check_structure(parts, main_poly, facts: dict | None = None) -> list[dict]:
                                           f"footprint at ground level (up to {worst:.1f} m out). Fine for a porch or "
                                           f"gate; otherwise move or shrink it."})
             continue
-        below = [q for q in live if q["id"] != pid and q["id"] in polys
-                 and float(q["base_z"]) <= z + 0.3 and _top(q) >= z - 0.5]
-        # a tapered support offers its outline at this height, not its base outline
-        sup = [geom.ring_at(polys[q["id"]], float(q["base_z"]), _top(q), q.get("taper"), min(z, _top(q)))
-               for q in below]
+        below, sup = [], []
+        for q in live:
+            if q["id"] == pid or q["id"] not in polys:
+                continue
+            for b0, b1, ring, taper in support_levels(q, polys[q["id"]]):
+                if b0 <= z + 0.3 and b1 >= z - 0.5:
+                    # a tapered support offers its outline at this height, not its base outline
+                    sup.append(geom.ring_at(ring, b0, b1, taper, min(z, b1)))
+                    if q not in below:
+                        below.append(q)
         gaps = [gap(pt, sup) for pt in pts]
         loose = [g for g in gaps if g > SUPPORT_TOLERANCE_M]
         worst = max(gaps)
@@ -286,7 +316,7 @@ def check_structure(parts, main_poly, facts: dict | None = None) -> list[dict]:
         except (TypeError, ValueError):
             total = None
     if total and live:
-        top = max(_top(p) + float(p["roof"].get("height", 0) or 0) for p in live)
+        top = max(_top(p) + geom.roof_total_height(p["roof"]) for p in live)
         if abs(top - total) / total > 0.15:
             issues.append({"severity": "warning", "part": None, "code": "height_mismatch",
                            "message": f"model top {top:.1f} m differs from the researched total height {total:g} m "

@@ -42,7 +42,10 @@ def photo_views(spec: dict) -> list[dict]:
             continue
         if n not in seen and len(out) < 6:
             seen.add(n)
-            out.append({"photo": n, "azimuth_deg": az, "elevation_deg": el})
+            ent = {"photo": n, "azimuth_deg": az, "elevation_deg": el}
+            if v.get("focus") and any(p.get("id") == v["focus"] for p in spec.get("parts") or []):
+                ent["focus"] = v["focus"]
+            out.append(ent)
     return out
 
 

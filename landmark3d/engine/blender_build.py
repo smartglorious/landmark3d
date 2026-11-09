@@ -123,10 +123,12 @@ def triangle_count():
     return total
 
 
-def photo_camera(scene, cd, bounds, cv, fill=0.88):
+def photo_camera(scene, cd, bounds, cv, fill=0.88, ground_z=None):
     """Camera position and aim for a photo viewpoint: binary-search the distance so the bounding box's projection
-    fills `fill` of the frame (the tighter axis). Street level (elevation <= 15 deg): camera at 1.7 m, looking up."""
+    fills `fill` of the frame (the tighter axis). Street level (elevation <= 15 deg): camera 1.7 m above the ground,
+    looking up. `bounds` may be one part's box (a close-up); the ground stays the building's."""
     (x0, y0, z0), (x1, y1, z1) = bounds
+    gz = z0 if ground_z is None else ground_z
     mid = Vector(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2))
     corners = [Vector((x, y, z)) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)]
     az, el = math.radians(float(cv["azimuth_deg"])), float(cv.get("elevation_deg", 10))
@@ -142,7 +144,7 @@ def photo_camera(scene, cd, bounds, cv, fill=0.88):
     def place(dist):
         loc = mid + d * dist
         if street:
-            loc = Vector((loc.x, loc.y, z0 + 1.7))
+            loc = Vector((loc.x, loc.y, gz + 1.7))
         return loc
 
     def extent(dist):
@@ -170,7 +172,7 @@ def photo_camera(scene, cd, bounds, cv, fill=0.88):
     return place(hi), mid
 
 
-def render_views(out_dir, bounds, views, custom=None, resolution=(1280, 800)):
+def render_views(out_dir, bounds, views, custom=None, resolution=(1280, 800), part_bounds=None):
     scene = bpy.context.scene
     for eng in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE", "BLENDER_WORKBENCH"):
         try:
@@ -256,7 +258,8 @@ def render_views(out_dir, bounds, views, custom=None, resolution=(1280, 800)):
             # Photo viewpoint: frame the model the way photos frame a building - it fills most of the picture,
             # and street-level shots are taken from eye height looking up.
             cd.lens = 40
-            cam.location, c_view = photo_camera(scene, cd, bounds, cv)
+            fb = (part_bounds or {}).get(cv.get("focus")) if cv.get("focus") else None
+            cam.location, c_view = photo_camera(scene, cd, fb or bounds, cv, ground_z=bounds[0][2])
             cam.rotation_mode = "QUATERNION"
             cam.rotation_quaternion = (c_view - cam.location).to_track_quat("-Z", "Y")
         else:
@@ -428,10 +431,13 @@ def main():
         covered = [pn for pn in job.get("panels") or [] if pn.get("part") == part["id"] and pn.get("edge_index") is not None]
         if covered:                                   # a real photo shows this face: drop the generated detail on it
             ring = geom.ensure_ccw(poly)
-            segs = [(ring[int(pn["edge_index"]) % len(ring)], ring[(int(pn["edge_index"]) + 1) % len(ring)]) for pn in covered]
+            z_lo, z_hi = part["base_z"], part["base_z"] + part["height"]
+            segs = [(ring[int(pn["edge_index"]) % len(ring)], ring[(int(pn["edge_index"]) + 1) % len(ring)],
+                     pn["z0"] if pn.get("z0") is not None else z_lo, pn["z1"] if pn.get("z1") is not None else z_hi)
+                    for pn in covered]
 
             def on_covered_face(face):
-                for a_, b_ in segs:
+                for a_, b_, pz0, pz1 in segs:
                     dx, dy = b_[0] - a_[0], b_[1] - a_[1]
                     ln = math.hypot(dx, dy) or 1.0
                     ok = True
@@ -439,7 +445,8 @@ def main():
                         x, y, _ = gm.verts[vi]
                         t_ = ((x - a_[0]) * dx + (y - a_[1]) * dy) / (ln * ln)
                         off = ((x - a_[0]) * dy - (y - a_[1]) * dx) / ln          # + = outside (CCW ring)
-                        if not (-0.02 <= t_ <= 1.02 and -0.05 <= off <= 1.2):
+                        z_ = gm.verts[vi][2]
+                        if not (-0.02 <= t_ <= 1.02 and -0.05 <= off <= 1.2 and pz0 - 0.05 <= z_ <= pz1 + 0.05):
                             ok = False
                             break
                     if ok:
@@ -463,9 +470,14 @@ def main():
     ys = [v[1] for _, _, g in meshes for v in g.verts] or [0]
     zs = [v[2] for _, _, g in meshes for v in g.verts] or [0]
     bounds = ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+    part_bounds = {}
+    for part, _, g in meshes:                        # close-up photos frame one part
+        if g.verts:
+            px, py, pz = zip(*g.verts)
+            part_bounds[part["id"]] = ((min(px), min(py), min(pz)), (max(px), max(py), max(pz)))
     os.makedirs(out["renders"], exist_ok=True)
     renders, engine = render_views(out["renders"], bounds, job.get("views", ["front_south", "oblique_sw", "oblique_ne", "aerial", "plan"]),
-                                   job.get("custom_views"), job.get("resolution", (1280, 800)))
+                                   job.get("custom_views"), job.get("resolution", (1280, 800)), part_bounds)
     if job.get("preview"):                           # photo-review preview: renders only, no export
         json.dump({"ok": True, "renders": renders, "triangles": triangle_count(), "bounds": bounds},
                   open(out["result"], "w", encoding="utf-8"), indent=2)

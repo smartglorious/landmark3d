@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 TOOL_ROOT = Path(__file__).resolve().parents[1]
-APP_HOME = Path(os.environ.get("LANDMARK3D_HOME", Path.home() / ".landmark3d"))
+APP_HOME = Path(os.environ.get("LANDMARK3D_HOME") or Path.home() / ".landmark3d")
 SETTINGS_FILE = APP_HOME / "settings.json"
 
 DEFAULT_BUDGETS = {

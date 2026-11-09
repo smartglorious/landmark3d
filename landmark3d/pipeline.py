@@ -428,6 +428,16 @@ def triage_photos(prj: Project, provider, photos: list, st: dict, max_keep: int 
     return kept, log
 
 
+def cam_of(v: dict, parts=None, default_el: float = 10.0) -> dict:
+    """Render camera for a photo view: direction, height angle and, for close-ups, the part the photo centres on
+    (the camera then frames that part instead of the whole building)."""
+    c = {"azimuth_deg": float(v.get("azimuth_deg", 270)), "elevation_deg": float(v.get("elevation_deg", default_el))}
+    f = v.get("focus")
+    if f and f != "whole" and (parts is None or any(p.get("id") == f for p in parts)):
+        c["focus"] = str(f)
+    return c
+
+
 def _compass(az: float) -> str:
     names = ["east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east"]
     return names[int(((az % 360) + 22.5) // 45) % 8]
@@ -458,6 +468,7 @@ def match_viewpoints(prj: Project, provider, massing: dict, photos: list, main, 
     sat_imgs = list(sat_imgs or [])[:1]
     prompt = agent.MATCH_PROMPT.format(
         name=st["name"], n=len(use), labels=", ".join(VIEW_LABELS),
+        parts=", ".join(f"{p['id']} ({p.get('kind', 'part')})" for p in massing["parts"]),
         label_dirs="; ".join(f"{lab} = {_compass(az)} ({az:.0f} deg)" for lab, az in cand_az.items()),
         satellite_note=("" if not sat_imgs else " Between the photos and the contact sheet there is a satellite plan "
                         "view (north up, site outline in yellow): use the streets and the surroundings in it to "
@@ -482,8 +493,12 @@ def match_viewpoints(prj: Project, provider, massing: dict, photos: list, main, 
             continue
         if 1 <= n <= len(use) and all(v["photo"] != n for v in out):
             lab = str(m["label"]).upper()
-            out.append({"photo": n, "azimuth_deg": round(cand_az[lab], 1),
-                        "elevation_deg": ELEVATIONS.get(str(m.get("elevation", "street")), 8.0), "label": lab})
+            ent = {"photo": n, "azimuth_deg": round(cand_az[lab], 1),
+                   "elevation_deg": ELEVATIONS.get(str(m.get("elevation", "street")), 8.0), "label": lab}
+            subject = str(m.get("subject") or "whole")
+            if subject != "whole" and any(p.get("id") == subject for p in massing["parts"]):
+                ent["focus"] = subject                    # a close-up: frame that part, not the whole building
+            out.append(ent)
     entry.update({"images": [sheet.relative_to(prj.root).as_posix()],
                   "differences": [f"photo {m.get('photo')} = side {str(m.get('label')).upper()} "
                                   f"({m.get('elevation', 'street')}): {m.get('why', '')}"[:240] for m in obj["matches"]],
@@ -521,8 +536,7 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
             except (TypeError, ValueError):
                 continue
             if 0 <= idx < len(photos) and f"photo{idx + 1}" not in views:
-                views[f"photo{idx + 1}"] = {"azimuth_deg": float(v.get("azimuth_deg", 270)),
-                                            "elevation_deg": float(v.get("elevation_deg", 10))}
+                views[f"photo{idx + 1}"] = cam_of(v, massing["parts"])
                 pairs.append((photos[idx], f"photo{idx + 1}"))
         if not pairs:                       # no viewpoints given: look at the main frontage from both sides
             d0 = dirs[0][0] if dirs else 0.0
@@ -590,13 +604,18 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
         new_views = []
         for v in obj.get("views") or []:
             try:
-                new_views.append({"photo": int(v["photo"]), "azimuth_deg": float(v["azimuth_deg"]) % 360.0,
-                                  "elevation_deg": float(v.get("elevation_deg", 8.0))})
+                nv = {"photo": int(v["photo"]), "azimuth_deg": float(v["azimuth_deg"]) % 360.0,
+                      "elevation_deg": float(v.get("elevation_deg", 8.0))}
+                old = next((m for m in (massing.get("views") or []) if m.get("photo") == nv["photo"]), {})
+                if v.get("focus") or old.get("focus"):    # a close-up stays a close-up unless the review says so
+                    nv["focus"] = v.get("focus") or old.get("focus")
+                new_views.append(nv)
             except (TypeError, ValueError, KeyError):
                 pass
         obj["views"] = new_views or massing.get("views") or matched
-        if new_views and matched and new_views != [{k: m[k] for k in ("photo", "azimuth_deg", "elevation_deg")}
-                                                   for m in matched]:
+        keys = ("photo", "azimuth_deg", "elevation_deg")
+        if new_views and matched and [{k: v[k] for k in keys} for v in new_views] != [{k: m[k] for k in keys}
+                                                                                     for m in matched]:
             entry["views_changed"] = True
         massing = obj
         candidates.append(massing)
@@ -619,7 +638,7 @@ def select_best(prj: Project, provider, candidates: list, photos: list, sat, mai
     for k, m in enumerate(cands, start=1):
         v1 = next((v for v in (m.get("views") or []) if int(v.get("photo", 0)) == 1), None) or \
             {"azimuth_deg": 270.0, "elevation_deg": 10.0}
-        views = {"photo1": {"azimuth_deg": float(v1["azimuth_deg"]), "elevation_deg": float(v1.get("elevation_deg", 10))}}
+        views = {"photo1": cam_of(v1, m["parts"])}
         if sat is not None:
             from .research import satellite
             views["satplan"] = {"ortho_extent": list(satellite.EXTENT_M)}
@@ -767,7 +786,7 @@ def judge(prj: Project, provider, massing: dict, photos: list, sat_imgs: list, m
         except (TypeError, ValueError, KeyError):
             continue
         if 1 <= n <= len(photos):
-            views[f"photo{n}"] = {"azimuth_deg": float(v["azimuth_deg"]), "elevation_deg": float(v.get("elevation_deg", 8))}
+            views[f"photo{n}"] = cam_of(v, massing["parts"], 8.0)
             pairs.append((photos[n - 1], f"photo{n}"))
     sat = next((p for p in (sat_imgs or []) if p.name == "satellite_annotated.jpg"), None)
     if sat is not None:

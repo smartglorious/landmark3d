@@ -15,10 +15,10 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
   - `build_spec`: AI massing → photo triage → viewpoint matching → review rounds → best candidate → judge → judge-gated facade rounds.
   - Checks: `material_errors`, `orientation_errors`, `facade_issues`.
 - `landmark3d/geom.py`:
-  - Pure geometry, shared with Blender: footprints, tapers, roofs.
+  - Pure geometry, shared with Blender: footprints, tapers, roofs (`overhang`, `upturn`, `skirts` tiers: `build_skirt`, `roof_total_height`).
   - Facades: `facade_layout`, one bay grid per facade run; `check_facade`.
   - `curtain_wall`, `features`.
-- `landmark3d/spec.py`: spec schema, `check_structure` (support, cantilevers, decks, orientation, height).
+- `landmark3d/spec.py`: spec schema, `check_structure` (support incl. skirt tiers via `support_levels`, cantilevers, decks, orientation, height).
 - `landmark3d/autotex.py`: automatic textures. `run_v2` does bay tiles on the grid, unique faces, QA, mirror repair, harmonise, swatches.
 - `landmark3d/engine/`:
   - `blender_build.py`: runs inside Blender (photo panels drop generated detail on their face).

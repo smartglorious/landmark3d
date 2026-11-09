@@ -156,3 +156,17 @@ def test_run_v2_bays_unique_and_qa(prj):
     w, h = Image.open(prj.root / north["file"]).size
     assert (w, h) == (960, 384)                      # 30 m face = 10 bays x 96 px; 12 m wall = 384 px
     assert (prj.root / "reports" / "autotex" / "qa_sheet.jpg").exists()
+
+
+def test_clean_band_crops_texture_and_shrinks_face_height():
+    from PIL import Image
+    from landmark3d import autotex
+    assert autotex.clean_band(None) is None
+    assert autotex.clean_band([0, 1]) is None                 # whole height clean: no crop
+    assert autotex.clean_band([0.5, 0.6]) is None             # too thin to be useful
+    assert autotex.clean_band([0.55, 0.0]) == (0.0, 0.55)     # order does not matter
+    img = Image.new("RGB", (200, 100), "white")
+    face = {"face": "hall:0", "z0": 0.0, "z1": 10.0}
+    out, f = autotex.crop_band(img, face, (0.0, 0.4))
+    assert out.size == (200, 40)
+    assert f["z1"] == 10.0 and f["z0"] == 6.0 and face["z0"] == 0.0   # the upper 40 % of the wall; input untouched

@@ -77,6 +77,12 @@ Web images are used as reference and, when the licence allows (public domain, CC
   - Pilasters stand on the bay lines, windows sit in the bay centres, and the entrance takes the central bay(s). All floors share the grid; a floor may use every 2nd or 3rd bay.
   - Window, pediment and awning widths are clamped so they never touch a pilaster. Heights stay clear of string courses and the cornice.
   - `geom.check_facade` verifies that no window overlaps a pilaster, the entrance or another window. `pipeline.facade_issues` sends such problems back to the AI as validation errors.
+- **Roofs** (`flat`, `gable`, `hip`, `pyramid`, `dome`, `shed`). Every roof can also take:
+  - `overhang`: the eaves project this many metres past the walls, with a soffit underneath. The ridge height stays the same.
+  - `upturn`: the convex eave corners curl up by this many metres, for East Asian roofs (temples, pagodas, communal houses, Sino-French markets).
+  - `skirts`: lower roof tiers, bottom first, as `[{depth, rise, gap, overhang?}]`, up to 3. Each skirt slopes inwards by `depth` while rising `rise`. Then an upper wall of `gap` m (clerestory or ventilation louvres) stands on the inset outline, and the roof `type` crowns the last tier. This covers tiered market halls, basilica aisles and pagoda storeys in ONE part.
+  - A part may stand on a skirt tier (for example a clock storey): base_z = wall top + Σ(rise + gap), with its plan inside the inset outline. The structure gate accepts it, and the total height counts the tiers.
+  - The AI is told to use `dome` only for real domes; a small pavilion with a pointed tiled roof is `pyramid` or `hip` with overhang and upturn.
 - **Tapers and decks**:
   - `taper` on a part: `top_scale`, profile `linear | ease_in | ease_out`, and `top_shift`, for spires, bud or bullet towers and glass pyramids. Facades follow it.
   - Thin decks (≤ 4 m) declared `cantilever_of` a tower may project up to 25 m with ≥ 8% overlap. Use them for helipads, viewing decks and canopies.
@@ -85,7 +91,7 @@ Web images are used as reference and, when the licence allows (public domain, CC
   - a rotation that follows no footprint edge direction;
   - a total height that differs from the researched one.
 - **AI massing**: the prompt lists the footprint's edge directions with their share (main street frontage first). Reviewer notes are passed as problems to fix in earlier versions. Materials must be the ones the parts use. Curtain-wall glass is normalised to metallic ≥ 0.85 and roughness ≤ 0.1.
-- **QA renders**: neutral sky (dark ground, bright horizon, blue zenith) so glass reflects something; cameras frame the whole building.
+- **QA renders**: neutral sky (dark ground, bright horizon, blue zenith) so glass reflects something. Cameras frame the whole building. When viewpoint matching finds that a photo is a close-up of one part (a tower or a portal), it records `"focus": "<part id>"`. That photo's render then frames just that part, from street height. The review rounds and the judge compare like for like, and the review may change the focus.
 
 ## Quality loop (AI, measured)
 
@@ -129,7 +135,10 @@ At build time (`"auto_textures": true`, `autotex.run_v2`), the model is textured
    - `unique`: a one-off face (an entrance pavilion), rectified whole.
    - `none`: the part keeps its plain material.
    - Roof swatches.
-2. **QA** (AI): all face textures on one numbered contact sheet. Bad ones (wrong region, distorted, mostly hidden) are dropped; occluded spans on unique faces are repaired from the mirrored symmetric half.
+2. **QA** (AI): all face textures go on one numbered contact sheet.
+   - Bad ones (wrong region, distorted, mostly hidden) are dropped.
+   - Occluded spans on unique faces are repaired from the mirrored symmetric half.
+   - When only a horizontal band is clean (usually the upper wall above stalls, crowds, vehicles or signboards), the AI gives `clean_rows`. The face then keeps just that band: the panel covers that height only, and the generated openings below stay.
 3. **Harmonise**: all photo textures are brought to the same brightness.
 4. **Place**: each face texture is a panel on the exact face, 8 cm in front of the wall. Generated windows, pilasters and features on that face are dropped, because the photo shows them.
    - Swatches must match their material's colour (mean sRGB distance ≤ 70) or are dropped; kept ones are colour-balanced and made seamless.

@@ -90,3 +90,8 @@
 07:56:55 buu-ien-trung-tam-sai-gon approved spec_review
 07:57:55 buu-ien-trung-tam-sai-gon A3 waiting: 3114 triangles, 620212 bytes, 12 renders
 07:57:55 DONE {"buu-ien-trung-tam-sai-gon": "A3 waiting: 3114 triangles, 620212 bytes, 12 renders"}
+12:25:14 project cho-binh-tay
+12:41:45 cho-binh-tay approved spec_review
+12:43:16 cho-binh-tay A3 waiting: 3672 triangles, 246152 bytes, 12 renders
+12:43:16 DONE {"cho-binh-tay": "A3 waiting: 3672 triangles, 246152 bytes, 12 renders"}
+13:03:54 project cho-binh-tay

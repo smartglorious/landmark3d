@@ -34,7 +34,7 @@ Find the facts needed to build a simple but recognisable 3D massing model. Retur
     "total_height_m": {{"value": number, "unit": "m", "confidence": "high|medium|low", "source": "url"}},
     "main_wall_height_m": {{...}},
     "length_m": {{...}}, "width_m": {{...}}, "levels": {{...}},
-    "roof_form": {{"value": "flat|gable|hip|pyramid|dome|shed|mixed: describe", ...}},
+    "roof_form": {{"value": "flat|gable|hip|pyramid|dome|shed|tiered|mixed: describe (tiers, eaves, upturned corners)", ...}},
     "roof_colour": {{"value": "#rrggbb or name", ...}},
     "wall_colour": {{"value": "#rrggbb or name", ...}},
     "facade_bay_spacing_m": {{...}}, "opening_type": {{"value": "rect|arch", ...}},
@@ -51,7 +51,8 @@ MASSING_SYSTEM = (
     "model whose silhouette matches the photos: every distinct volume you can see (podium, mid-rise block, tower, "
     "crown) is its own part, with the plan shape and facade type it really has. "
     "Coordinates are metres in a local frame: x east, y north, origin at the footprint centroid. "
-    "Roof types: flat, gable, hip, pyramid, dome, shed, none. Reply with one JSON object only."
+    "Roof types: flat, gable, hip, pyramid, dome, shed, none; any of them may have projecting eaves (overhang), "
+    "upturned corners (upturn) and lower tiers (skirts). Reply with one JSON object only."
 )
 
 MASSING_PROMPT = """Landmark: {name} ({location})
@@ -80,7 +81,9 @@ Each part:
  "taper": {{"top_scale": s, "profile": "linear|ease_in|ease_out", "top_shift": [dx, dy]}}
           (walls that narrow or widen upwards: the top outline = base outline scaled by s about its centre and
            shifted by dx, dy m; ease_in = stays wide then narrows near the top like a bud),
- "roof": {{"type": "...", "height": m, "ridge_axis": "long|short", "parapet": m}},
+ "roof": {{"type": "...", "height": m, "ridge_axis": "long|short", "parapet": m,
+          "overhang": m (eaves projecting past the walls), "upturn": m (eave corners curling up),
+          "skirts": [{{"depth": m, "rise": m, "gap": m, "overhang": m}}, ...] (lower roof tiers, bottom first)}},
  "facade": {{
    "opening_type": "rect|arch|square|storefront|none|curtain_wall", "level_height": m, "bay_spacing": m,
    "opening_width": m, "opening_height": m, "pediment": true|false,
@@ -106,6 +109,16 @@ Modelling guidance:
   base outline of the next).
 - Decks (helipads, viewing platforms, canopies): a thin part (height <= 4 m) with "cantilever_of" the tower it is
   fixed to; it may project up to 25 m as long as a little of it (8 %) overlaps the tower outline at that height.
+- Roofs as seen in the photos: tiled / tropical roofs project past the walls ("overhang" 0.6-2 m; look at the
+  shadow line under the eaves); East Asian roofs (temples, pagodas, communal houses, Sino-French markets) curl up
+  at the corners ("upturn" 0.2-1 m). Use "dome" ONLY for a real hemispherical / onion dome - a small pavilion or
+  kiosk with a pointed tiled roof is "pyramid" or "hip" with overhang and upturn.
+- Tiered roofs (a lower roof band around the building, then a raised upper wall - clerestory, ventilation louvres,
+  an upper storey - then the main roof; market halls, temples, basilica aisles, pagoda storeys): ONE part with
+  roof "skirts" instead of a wing part plus an "upper" part. Each skirt slopes inwards by "depth" m while rising
+  "rise" m; the upper wall of "gap" m stands on that inset outline; the roof "type" / "height" crowns the last tier.
+  A storey above (a clock storey on a gate tower) is its own part with base_z = wall top + the sum of rise + gap,
+  its plan inside the inset outline. Count the tiers in the photos: every visible roof band is one skirt.
 - Satellite views of tall buildings lean: roofs appear shifted away from the base. Place every volume by its BASE
   (where it meets the ground / the site outline), not by where its roof appears.
 - An undercut / overhang (upper floors projecting past lower ones, a curved recess at the bottom of a block):
@@ -133,8 +146,12 @@ short side faces the camera, and what is on the left and right.
 
 For each photo, pick the label whose view shows the building from the same side. Also say how high the camera
 was: "street" (normal street-level photo), "raised" (from an upper floor / slightly above) or "aerial".
+And say what the photo is framed on: "whole" when it shows most of the building, or the id of the ONE part a
+close-up centres on (e.g. a photo of just the clock tower or the main portal), so that part is rendered up close.
+Parts of the model: {parts}.
 Reply with one JSON object:
-{{"matches": [{{"photo": 1, "label": "A".."H", "elevation": "street|raised|aerial", "why": "..."}}, ...]}}"""
+{{"matches": [{{"photo": 1, "label": "A".."H", "elevation": "street|raised|aerial", "subject": "whole|<part id>",
+  "why": "..."}}, ...]}}"""
 
 TRIAGE_PROMPT = """Landmark: {name} ({location}). The attached contact sheet shows {n} candidate reference photos,
 numbered 1 .. {n}. They will be used to model the building's CURRENT exterior massing (volumes, roofs, facades).
@@ -198,8 +215,9 @@ Outline edge directions: {directions}
 Each attached image shows a reference PHOTO on the left and a render of YOUR MODEL on the right, from about the
 same viewpoint (images in the same order as the views you gave).{satellite_note} Compare them carefully, volume by volume:
 plan shapes (rounded vs sharp), which street each volume is parallel to, relative positions and setbacks,
-heights and storey counts, undercuts / overhangs, the facade floor by floor (window shapes, bays, pilasters,
-entrance, cornice), and colours.
+heights and storey counts, undercuts / overhangs, the roofs (number of roof tiers / skirts, raised clerestory or
+upper walls between them, projecting eaves, upturned corners, real domes vs pointed pavilion roofs), the facade
+floor by floor (window shapes, bays, pilasters, entrance, cornice), and colours.
 
 Measure, do not just glance: compare proportions in the images (e.g. tower height to width, spire height to tower
 height, podium height to total height, how many storeys / bays) and name the numbers you see.
@@ -217,7 +235,8 @@ A part with "footprint": "main" takes the whole OSM site outline; if the photos 
 different plan (e.g. a sharp-cornered rectangle instead of rounded ends), replace it with the right shape.
 If a MODEL render does not show the building from the same side and angle as its PHOTO, correct that photo's
 "views" entry (azimuth_deg = direction from the building to the camera, 0 = east, 90 = north) so the next
-comparison is like for like - say so in "differences"."""
+comparison is like for like - say so in "differences". A close-up photo (one tower, one portal) is rendered
+framed on one part: keep or set "focus": "<part id>" in its views entry ("whole" for the full building)."""
 
 
 def _facts_from_osm(tags: dict) -> dict:

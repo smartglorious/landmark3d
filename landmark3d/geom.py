@@ -415,11 +415,113 @@ def taper_heights(base_z, top_z, taper):
     return [base_z + (top_z - base_z) * j / segs for j in range(segs + 1)]
 
 
+MAX_SKIRTS = 3
+
+
+def roof_skirts(roof) -> list[dict]:
+    """The usable skirt tiers of a roof (bottom first), with numeric fields."""
+    out = []
+    for s in (roof or {}).get("skirts") or []:
+        if not isinstance(s, dict):
+            continue
+        try:
+            depth, rise = float(s.get("depth", 0)), float(s.get("rise", 0))
+            gap, ov = float(s.get("gap", 0) or 0), s.get("overhang")
+        except (TypeError, ValueError):
+            continue
+        if depth > 0.2 and rise >= 0:
+            out.append({"depth": depth, "rise": rise, "gap": max(0.0, gap),
+                        "overhang": None if ov is None else max(0.0, float(ov))})
+    return out[:MAX_SKIRTS]
+
+
+def roof_total_height(roof) -> float:
+    """Height of everything above the wall top: skirt tiers (rise + clerestory gap) and the top roof."""
+    return sum(s["rise"] + s["gap"] for s in roof_skirts(roof)) + float((roof or {}).get("height", 0) or 0)
+
+
+def corner_lifts(ring, up: float, min_turn_deg: float = 25.0) -> list[float]:
+    """Upturned eaves: lift `up` metres at the convex corners of a CCW ring (0 elsewhere)."""
+    n = len(ring)
+    if not up or up <= 0:
+        return [0.0] * n
+    out = []
+    for i in range(n):
+        p, a, q = ring[i - 1], ring[i], ring[(i + 1) % n]
+        e1, e2 = (a[0] - p[0], a[1] - p[1]), (q[0] - a[0], q[1] - a[1])
+        cross = e1[0] * e2[1] - e1[1] * e2[0]
+        l1, l2 = math.hypot(*e1), math.hypot(*e2)
+        turn = math.degrees(math.asin(max(-1.0, min(1.0, cross / max(1e-9, l1 * l2)))))
+        out.append(float(up) if turn >= min_turn_deg else 0.0)
+    return out
+
+
+def _plain_walls(poly, base_z, top_z, mesh: Mesh):
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        mesh.f((mesh.v(a[0], a[1], base_z), mesh.v(b[0], b[1], base_z), mesh.v(b[0], b[1], top_z),
+                mesh.v(a[0], a[1], top_z)), "wall")
+
+
+def _soffit(ring, outer, z_ring, z_outer, mesh: Mesh):
+    """Underside of projecting eaves: from the wall line out to the eave edge (faces point down)."""
+    n = len(ring)
+    for i in range(n):
+        a, b, oa, ob = ring[i], ring[(i + 1) % n], outer[i], outer[(i + 1) % n]
+        mesh.f((mesh.v(a[0], a[1], z_ring(i)), mesh.v(oa[0], oa[1], z_outer(i)),
+                mesh.v(ob[0], ob[1], z_outer((i + 1) % n)), mesh.v(b[0], b[1], z_ring((i + 1) % n))), "trim")
+
+
+def build_skirt(ring, z, skirt, mesh: Mesh, overhang=0.0, upturn=0.0):
+    """One lower roof tier (a "skirt"): a sloped band from the wall line (or the eave edge when it overhangs) up to
+    the ring inset by `depth`, rising `rise` m. Returns the inset ring (where the clerestory / upper walls stand),
+    or None when the inset does not fit the plan."""
+    depth, rise = skirt["depth"], skirt["rise"]
+    inner, per_edge = inward_offset(ring, depth)
+    if inner is None or not offset_is_valid(ring, inner, per_edge):
+        return None
+    ov = skirt["overhang"] if skirt.get("overhang") is not None else overhang
+    outer = outward_offset(ring, ov) if ov > 0 else list(ring)
+    drop = ov * rise / depth                          # the slope continues out to the eave edge
+    lift = corner_lifts(outer, upturn)
+    n = len(ring)
+    zt = z + rise
+    for j in range(n):
+        oa, ob = outer[j], outer[(j + 1) % n]
+        ia, ib = per_edge[j]
+        za, zb = z - drop + lift[j], z - drop + lift[(j + 1) % n]
+        if math.dist(ia, ib) < 1e-6:
+            mesh.f((mesh.v(oa[0], oa[1], za), mesh.v(ob[0], ob[1], zb), mesh.v(ia[0], ia[1], zt)), "roof")
+        else:
+            mesh.f((mesh.v(oa[0], oa[1], za), mesh.v(ob[0], ob[1], zb), mesh.v(ib[0], ib[1], zt),
+                    mesh.v(ia[0], ia[1], zt)), "roof")
+    if ov > 0:
+        _soffit(ring, outer, lambda i: z, lambda i: z - drop + lift[i], mesh)
+    return inner
+
+
 def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
-    """Walls + roof of one part. roof = {type, height, ridge_axis?, overhang?, parapet?}.
+    """Walls + roof of one part. roof = {type, height, ridge_axis?, overhang?, parapet?, upturn?, skirts?}.
     taper = {top_scale, profile linear|ease_in|ease_out, top_shift [dx, dy]}: the walls narrow (or widen) upwards
-    and the roof sits on the top outline."""
+    and the roof sits on the top outline.
+    overhang: eaves project this far past the walls (with a soffit underneath).
+    upturn: the eave corners curl up by this much (East Asian roofs).
+    skirts: lower roof tiers, bottom first: [{depth, rise, gap, overhang?}] - each slopes in by `depth` while rising
+    `rise`, then a clerestory / upper wall of `gap` m stands on the inset ring; the roof `type` crowns the last one
+    (tiered market halls, pagoda storeys, basilica aisles)."""
     poly = ensure_ccw(poly)
+    roof = dict(roof or {"type": "flat"})
+    skirts = roof_skirts(roof)
+    if skirts and not is_tapered(taper):
+        s = skirts[0]
+        inner = build_skirt(poly, eave_z, s, mesh, float(roof.get("overhang", 0) or 0), float(roof.get("upturn", 0) or 0))
+        if inner is not None:
+            _plain_walls(poly, base_z, eave_z, mesh)
+            rest = dict(roof, skirts=[dict(k) for k in skirts[1:]])
+            build_part(inner, eave_z + s["rise"], eave_z + s["rise"] + s["gap"], rest, mesh)
+            return
+        roof["skirts"] = []                       # does not fit: plain roof
     if is_tapered(taper):
         zs = taper_heights(base_z, eave_z, taper)
         rings = [ring_at(poly, base_z, eave_z, taper, z) for z in zs]
@@ -433,6 +535,10 @@ def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
         build_part(rings[-1], eave_z, eave_z, roof, mesh)           # zero-height walls are dropped
         return
     rtype = roof.get("type", "flat")
+    ov, up = max(0.0, float(roof.get("overhang", 0) or 0)), max(0.0, float(roof.get("upturn", 0) or 0))
+    if (ov > 0.05 or up > 0.05) and rtype in ("hip", "pyramid", "flat", "gable", "shed"):
+        if _eaves_roof(poly, base_z, eave_z, roof, mesh, ov, up):
+            return
     roof = dict(roof, eave_z=eave_z)
     zfn, ridge = roof_height_fn(poly, roof)
     ring = poly
@@ -507,8 +613,85 @@ def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
     build_hip(poly, eave_z, roof.get("height"), mesh, roof.get("pitch_deg"))
 
 
-def build_hip(poly, eave_z, height, mesh: Mesh, pitch_deg=None):
+def _plane_fn(poly, roof, eave_z, rise):
+    """Unclamped roof plane for gable / shed (continues past the walls out to the eave edge)."""
+    u, v, (umin, umax, vmin, vmax) = min_area_rect(poly)
+    if roof.get("ridge_axis") == "short":
+        u, v = v, (-u[0], -u[1])
+        vs = [p[0] * v[0] + p[1] * v[1] for p in poly]
+        vmin, vmax = min(vs), max(vs)
+    vc, half = (vmin + vmax) / 2, max(1e-6, (vmax - vmin) / 2)
+    if roof.get("type") == "gable":
+        return (lambda x, y: eave_z + rise * (1.0 - abs((x * v[0] + y * v[1]) - vc) / half)), (v, vc)
+    return (lambda x, y: eave_z + rise * ((x * v[0] + y * v[1]) - vmin) / (2 * half)), None
+
+
+def _eaves_roof(poly, base_z, eave_z, roof, mesh: Mesh, ov: float, up: float) -> bool:
+    """Roof whose eaves project `ov` m past the walls (soffit underneath) and whose corners curl up by `up` m."""
+    rtype = roof.get("type", "flat")
+    h = float(roof.get("height", 0) or 0)
+    outer = outward_offset(poly, ov) if ov > 0 else list(poly)
+    n = len(poly)
+    if rtype in ("gable", "shed"):
+        zfn, ridge = _plane_fn(poly, roof, eave_z, h)
+        ring, oring = poly, outer
+        if ridge is not None:
+            ring, oring = insert_ridge_points(poly, *ridge), insert_ridge_points(outer, *ridge)
+            if len(ring) != len(oring):
+                ring, oring = poly, outer
+        for i in range(len(ring)):
+            a, b = ring[i], ring[(i + 1) % len(ring)]
+            mesh.f((mesh.v(a[0], a[1], base_z), mesh.v(b[0], b[1], base_z), mesh.v(b[0], b[1], zfn(*b)),
+                    mesh.v(a[0], a[1], zfn(*a))), "wall")
+        if ridge is not None:
+            v, vc = ridge
+            halves = [clip_halfplane(oring, v[0], v[1], vc), clip_halfplane(oring, -v[0], -v[1], -vc)]
+        else:
+            halves = [oring]
+        for hp in halves:
+            if len(hp) >= 3:
+                mesh.f([mesh.v(x, y, zfn(x, y)) for x, y in hp], "roof")
+        if ov > 0:
+            _soffit(ring, oring, lambda i: zfn(*ring[i]), lambda i: zfn(*oring[i]) - 0.05, mesh)
+        return True
+    _plain_walls(poly, base_z, eave_z, mesh)
+    lift = corner_lifts(outer, up)
+    if rtype == "flat":
+        fz = eave_z - 0.25
+        mesh.f([mesh.v(x, y, eave_z) for x, y in outer], "roof")
+        for i in range(n):                                  # fascia
+            a, b = outer[i], outer[(i + 1) % n]
+            mesh.f((mesh.v(a[0], a[1], fz), mesh.v(b[0], b[1], fz), mesh.v(b[0], b[1], eave_z),
+                    mesh.v(a[0], a[1], eave_z)), "trim")
+        if ov > 0:
+            _soffit(poly, outer, lambda i: fz, lambda i: fz, mesh)
+        return True
+    if rtype == "pyramid":
+        c = centroid(poly)
+        r = sum(math.dist(c, p) for p in poly) / n
+        h = h or 3.0
+        drop = ov * h / max(0.1, r)
+        apex = mesh.v(c[0], c[1], eave_z + h)
+        for i in range(n):
+            a, b = outer[i], outer[(i + 1) % n]
+            mesh.f((mesh.v(a[0], a[1], eave_z - drop + lift[i]), mesh.v(b[0], b[1], eave_z - drop + lift[(i + 1) % n]),
+                    apex), "roof")
+    else:
+        r_in = inradius_estimate(poly)
+        if r_in <= 0.05:
+            return False
+        if not h:
+            h = r_in * math.tan(math.radians(roof.get("pitch_deg") or 25.0))
+        drop = ov * h / r_in
+        build_hip(outer, eave_z - drop, h + drop, mesh, lift=lift)
+    if ov > 0:
+        _soffit(poly, outer, lambda i: eave_z, lambda i: eave_z - drop + lift[i] - 0.05, mesh)
+    return True
+
+
+def build_hip(poly, eave_z, height, mesh: Mesh, pitch_deg=None, lift=None):
     r_in = inradius_estimate(poly)
+    lift = lift or [0.0] * len(poly)
     if r_in <= 0.05:
         mesh.f([mesh.v(x, y, eave_z) for x, y in poly], "roof")
         return
@@ -534,10 +717,11 @@ def build_hip(poly, eave_z, height, mesh: Mesh, pitch_deg=None):
             (oa, ob), (ia, ib) = outer_segs[j], per_edge[j]
             if math.dist(oa, ob) < 1e-6:
                 continue
+            za, zb = (z0 + lift[j], z0 + lift[(j + 1) % len(poly)]) if k == 1 else (z0, z0)
             if math.dist(ia, ib) < 1e-6:
-                mesh.f((mesh.v(oa[0], oa[1], z0), mesh.v(ob[0], ob[1], z0), mesh.v(ia[0], ia[1], z1)), "roof")
+                mesh.f((mesh.v(oa[0], oa[1], za), mesh.v(ob[0], ob[1], zb), mesh.v(ia[0], ia[1], z1)), "roof")
             else:
-                mesh.f((mesh.v(oa[0], oa[1], z0), mesh.v(ob[0], ob[1], z0), mesh.v(ib[0], ib[1], z1),
+                mesh.f((mesh.v(oa[0], oa[1], za), mesh.v(ob[0], ob[1], zb), mesh.v(ib[0], ib[1], z1),
                         mesh.v(ia[0], ia[1], z1)), "roof")
         ring = inner
         d_done = d

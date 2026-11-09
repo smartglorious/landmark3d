@@ -436,7 +436,12 @@ should look like a straight-on, clean elevation of one wall of the building. For
 - "drop": wrong region (sky, ground, another building, mostly roof), badly distorted, or mostly hidden.
 For kept textures, list horizontal spans hidden by trees, people, vehicles or poles as fractions of the width
 (e.g. [[0.0, 0.2]]); they will be repaired from the mirrored symmetric part.
-Reply with one JSON object: {{"textures": [{{"n": 1, "verdict": "keep|drop", "occluded": [[x0, x1]], "why": "..."}}]}}"""
+When only a horizontal BAND of the wall is clean (typically the upper wall above shop stalls, crowds, parked
+vehicles, signboards or awnings), do not drop it: keep it and give that band as "clean_rows": [top, bottom]
+fractions of the height (0 = top edge, e.g. [0.0, 0.55]). Only that band is used; the rest of the wall keeps its
+modelled openings. Omit clean_rows when the whole height is clean.
+Reply with one JSON object: {{"textures": [{{"n": 1, "verdict": "keep|drop", "occluded": [[x0, x1]],
+"clean_rows": [top, bottom], "why": "..."}}]}}"""
 
 
 def plan_v2(prj: Project, provider, spec: dict):
@@ -581,8 +586,36 @@ def qa_v2(prj: Project, provider, items: list) -> list:
             continue
         if v.get("occluded") and it["kind"] == "unique":
             it["img"] = mirror_repair(it["img"], v["occluded"])
+        band = clean_band(v.get("clean_rows"))
+        if band is not None:
+            it["img"], it["face"] = crop_band(it["img"], it["face"], band)
         kept.append(it)
     return kept
+
+
+MIN_BAND = 0.2
+
+
+def clean_band(rows):
+    """[top, bottom] height fractions of the clean part of a texture, or None (whole height / unusable)."""
+    try:
+        t, b = sorted(float(x) for x in rows)
+    except (TypeError, ValueError):
+        return None
+    t, b = max(0.0, t), min(1.0, b)
+    if b - t < MIN_BAND or (t <= 0.02 and b >= 0.98):
+        return None
+    return t, b
+
+
+def crop_band(img, face, band):
+    """Keep the clean band of a face texture; the face's z range shrinks to match (top = 0 is the wall top)."""
+    t, b = band
+    h = img.height
+    out = img.crop((0, int(round(t * h)), img.width, max(int(round(t * h)) + 1, int(round(b * h)))))
+    z0, z1 = float(face["z0"]), float(face["z1"])
+    f = dict(face, z1=round(z1 - t * (z1 - z0), 3), z0=round(z1 - b * (z1 - z0), 3))
+    return out, f
 
 
 def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: str) -> dict:

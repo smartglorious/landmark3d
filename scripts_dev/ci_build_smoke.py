@@ -12,7 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-os.environ.setdefault("LANDMARK3D_HOME", tempfile.mkdtemp(prefix="l3d_ci_"))
+if not os.environ.get("LANDMARK3D_HOME"):
+    os.environ["LANDMARK3D_HOME"] = tempfile.mkdtemp(prefix="l3d_ci_")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from landmark3d import pipeline, settings  # noqa: E402
