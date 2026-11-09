@@ -162,7 +162,7 @@
     },
     {
       "id": "plinth_string_course",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "horizontal_articulation",
       "milestone": "M4",
       "style_tags": [
@@ -178,7 +178,7 @@
           "default": 0.6
         },
         "projection_m": {
-          "min": 0.02,
+          "min": 0.0,
           "max": 0.6,
           "default": 0.12
         }
@@ -186,10 +186,13 @@
       "material_slots": [
         "trim"
       ],
-      "lods": [],
-      "planned_lods": [
-        "band"
-      ]
+      "lods": [
+        {
+          "level": 0,
+          "generator": "plinth_band"
+        }
+      ],
+      "note": "Plinth ring projecting around the outline (geometry engine band). String courses stay in the v1 facade bands."
     },
     {
       "id": "stepped_cornice",
@@ -382,6 +385,93 @@
         "spike",
         "ball_spike"
       ]
+    },
+    {
+      "id": "brise_soleil_array",
+      "status": "implemented",
+      "semantic_type": "vertical_articulation",
+      "milestone": "M4",
+      "style_tags": [
+        "modernist",
+        "contemporary",
+        "colonial"
+      ],
+      "parameters": {
+        "count": {
+          "min": 1,
+          "max": 80,
+          "default": 6
+        },
+        "spacing_m": {
+          "min": 0.2,
+          "max": 6.0,
+          "default": 1.2
+        },
+        "fin_width_m": {
+          "min": 0.03,
+          "max": 0.5,
+          "default": 0.12
+        },
+        "depth_m": {
+          "min": 0.05,
+          "max": 2.0,
+          "default": 0.6
+        },
+        "height_m": {
+          "min": 0.2,
+          "max": 20.0,
+          "default": 3.0
+        }
+      },
+      "material_slots": [
+        "trim"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "brise_soleil_array"
+        }
+      ],
+      "note": "Vertical fins on one outline face. Raises if the array does not fit the face."
+    },
+    {
+      "id": "chimney_stack",
+      "status": "implemented",
+      "semantic_type": "roof_skyline",
+      "milestone": "M4",
+      "style_tags": [
+        "classical",
+        "colonial",
+        "beaux_arts",
+        "modernist"
+      ],
+      "parameters": {
+        "width_m": {
+          "min": 0.3,
+          "max": 3.0,
+          "default": 0.8
+        },
+        "depth_m": {
+          "min": 0.3,
+          "max": 3.0,
+          "default": 0.8
+        },
+        "height_m": {
+          "min": 0.3,
+          "max": 10.0,
+          "default": 2.5
+        }
+      },
+      "material_slots": [
+        "trim"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "chimney_stack"
+        }
+      ],
+      "note": "Rectangular stack with a projecting cap."
     }
   ]
 }

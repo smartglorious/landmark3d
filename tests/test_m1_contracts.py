@@ -86,7 +86,7 @@ def test_registry_rejects_duplicate_ids_and_bad_parameters():
 
 def test_a_planned_component_cannot_claim_lods_yet():
     lib = copy.deepcopy(registry.load_library())
-    registry.component("plinth_string_course", lib)["lods"] = [{"level": 0, "generator": "x"}]
+    registry.component("stepped_cornice", lib)["lods"] = [{"level": 0, "generator": "x"}]    # still planned (M4 later)
     assert any("planned" in e for e in registry.validate_registry(lib, generators={"x": None}))
 
 
