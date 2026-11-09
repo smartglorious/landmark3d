@@ -24,7 +24,7 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
   - `blender_build.py`: runs inside Blender (photo panels drop generated detail on their face).
   - `runner.py`: build and preview jobs.
 - `landmark3d/installer.py`: `setup` command (pinned three.js r160 into `web/vendor/`, Blender discovery, doctor). OS installers: `install.ps1` / `install.cmd` / `install.sh`; launchers `Landmark3D.cmd` / `start.sh`; versions in `requirements.lock`.
-- `landmark3d/server.py` + `web/`: local web app on port 8770. `tests/`: pytest; tests never touch the network (see `tests/conftest.py`).
+- `landmark3d/server.py` + `web/`: local web app on port 8770; publisher details in `web/about.json`. `tests/`: pytest; tests never touch the network (see `tests/conftest.py`).
 
 ## Rules
 - **Never commit** `projects/` (licensed photos, the owner's photos, Esri imagery, .blend/.glb) or images under `reports/` (made from them). Scan staged files for keys and emails before pushing.
@@ -36,7 +36,7 @@ User docs: `README.md`. Evaluation: `reports/benchmark/BENCHMARK.md`.
   - Back geometric rules with deterministic checks and tests.
   - Measure on a held-out set run once with the tool frozen.
 - **AI failures** (quota, sign-in) must not be silently replaced by defaults: `ai_failed` blocks A2.
-- **CI** (`.github/workflows/ci.yml`): tests on 3 OS x Python 3.11/3.13, real installers, Blender 4.2 + 5.2 builds. Release: push tag `vX.Y.Z` = pyproject version (`release.yml`).
+- **CI** (`.github/workflows/ci.yml`): tests on 3 OS x Python 3.11/3.13, real installers, Blender 4.2 + 5.2 builds. Release: bump `pyproject.toml` and `landmark3d/_version.py`, then push tag `vX.Y.Z` = pyproject version (`release.yml`).
 - **Restart the server after code changes.** The web server does not reload; the Blender engine is a fresh subprocess each build.
 
 ## Commands

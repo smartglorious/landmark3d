@@ -198,7 +198,7 @@ def build_spec(prj: Project) -> dict:
                     f" After the photos come {len(sat_imgs)} satellite plan view(s), north up: the first has the "
                     "OSM site outline in yellow and the spec grid labelled in metres (x east, y north). Use it for "
                     "positions, sizes and orientations of every volume - it is the most reliable plan information.")
-        notes = [a.get("notes", "") for a in st.get("approvals", []) if a.get("decision") == "changes_requested"]
+        notes = change_requests(st)
         prompt = agent.MASSING_PROMPT.format(
             name=st["name"], location=st["location"],
             footprint=json.dumps([[round(x, 1), round(y, 1)] for x, y in main]),
@@ -210,6 +210,7 @@ def build_spec(prj: Project) -> dict:
                               for p in parts[1:] if isinstance(p.get("footprint"), dict) and "polygon" in p["footprint"]]),
             facts=json.dumps({k: v.get("value") for k, v in facts.items()}, ensure_ascii=False),
             notes=json.dumps(notes + [st.get("notes", "")], ensure_ascii=False), satellite_note=sat_note)
+        prompt += agent.user_directive(st, notes=False)
         try:
             def massing_check(obj):
                 errs = spec_mod.validate_massing(obj)
@@ -570,6 +571,7 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
                             "site outline in yellow, grid in metres) with YOUR MODEL seen from straight above "
                             "(right) at the same extent and scale: check positions, plan shapes, sizes and "
                             "orientations of every volume against it."))
+        prompt += agent.user_directive(st)
 
         def review_check(o):
             scores = o.get("scores")
@@ -811,6 +813,7 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
                "stand on the bay lines; each window sits in the middle of a bay, so opening_width must be smaller than "
                "bay_spacing minus the pilaster width minus 0.3 m. A floor may use every 2nd or 3rd bay (bay_spacing = 2x "
                "or 3x the facade's), never a different rhythm. The entrance takes the central bay(s).")
+    prompt += agent.user_directive(st)
 
     def merged(o):
         by_id = {p.get("id"): p for p in o.get("parts", []) if isinstance(p, dict)}
@@ -1055,6 +1058,51 @@ def approve(prj: Project, phase: str, decision: str, notes: str = "") -> dict:
     for pid in ids[ids.index(target):]:
         prj.set_phase(pid, "pending", f"reset by change request on {phase}" if pid != phase else notes)
     return {"ok": True, "rewound_to": target}
+
+
+def change_requests(st: dict) -> list[str]:
+    """Reviewer notes that still apply: those given since the last restart from scratch."""
+    approvals = st.get("approvals", [])
+    last = max((i for i, a in enumerate(approvals) if a.get("decision") == "restart"), default=-1)
+    return [a.get("notes", "") for a in approvals[last + 1:] if a.get("decision") == "changes_requested"]
+
+
+def _record_decision(prj: Project, phase: str, decision: str, notes: str) -> None:
+    prj.update_state(lambda s: s["approvals"].append({"phase": phase, "decision": decision, "notes": notes,
+                                                      "t": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+
+
+def reopen(prj: Project, phase: str, notes: str = "") -> dict:
+    """Go back to an approval stage (A1, A2, A3, A6) that was already reached, to review and adjust it. Its results are
+    kept; only the later phases go back to pending and run again after the stage is approved."""
+    ids = [p["id"] for p in PHASES]
+    stage = next((p for p in PHASES if p["id"] == phase and p["approval"]), None)
+    if stage is None:
+        raise ValueError("only approval stages can be reopened")
+    index = ids.index(phase)
+    if prj.state()["phases"][ids[index - 1]]["status"] != "done":
+        raise ValueError(f"{stage['title']} has not been reached yet")
+    _record_decision(prj, phase, "reopened", notes)
+    prj.set_phase(phase, "waiting_approval", notes or "reopened by user")
+    for pid in ids[index + 1:]:
+        prj.set_phase(pid, "pending", f"reset: {phase} was reopened")
+    return {"ok": True, "reopened": phase}
+
+
+RESTART_PHASES = ("research", "spec")
+
+
+def restart(prj: Project, notes: str = "", advanced_prompt: str = "", start: str = "research") -> dict:
+    """Run again from research (or from the massing spec) with the given note and advanced prompt. They replace the
+    earlier ones, and earlier change requests no longer apply. Files the user added are kept."""
+    if start not in RESTART_PHASES:
+        raise ValueError(f"start must be one of {', '.join(RESTART_PHASES)}")
+    prj.update_state(lambda s: s.update(notes=notes.strip(), advanced_prompt=advanced_prompt.strip()))
+    _record_decision(prj, start, "restart", notes.strip())
+    ids = [p["id"] for p in PHASES]
+    for pid in ids[ids.index(start):]:
+        prj.set_phase(pid, "pending", "restarted by user")
+    return {"ok": True, "start": start}
 
 
 def submit_inputs(prj: Project, values: dict) -> list:

@@ -25,6 +25,7 @@ function route() {
   if (page === 'connections') return viewConnections();
   if (page === 'doctor') return viewDoctor();
   if (page === 'settings') return viewSettings();
+  if (page === 'about') return viewAbout();
   return viewProjects();
 }
 window.addEventListener('hashchange', route);
@@ -83,11 +84,14 @@ async function viewProject(id, fromPoll) {
   <div class="row" style="align-items:flex-start">
     <div class="card" style="flex:0 0 360px">
       <h2>Các bước</h2>
-      <ul class="phases">${d.phases.map(p => `<li><div class="grow">${esc(p.title)}<div class="msg">${esc(st.phases[p.id].message || '')}</div></div>
-        <div>${chip(st.phases[p.id].status)}</div></li>`).join('')}</ul>
+      <ul class="phases">${d.phases.map((p, i) => `<li><div class="grow">${esc(p.title)}<div class="msg">${esc(st.phases[p.id].message || '')}</div></div>
+        <div class="phase-side">${chip(st.phases[p.id].status)}${canReopen(d, p, i) ? `<button class="mini" data-reopen="${esc(p.id)}">Quay lại</button>` : ''}</div></li>`).join('')}</ul>
+      <div id="reopen-box"></div>
       <p class="row"><button class="primary" id="run" ${d.running ? 'disabled' : ''}>${d.running ? 'Đang chạy…' : 'Chạy tiếp'}</button>
-        <button id="budgets-btn">Giới hạn output</button></p>
+        <button id="budgets-btn">Giới hạn output</button>
+        <button class="danger-outline" id="restart-open" ${d.running ? 'disabled' : ''}>Chạy lại từ đầu</button></p>
       <div id="budgets"></div>
+      <div id="restart-box"></div>
     </div>
     <div class="grow" id="stage"></div>
   </div>
@@ -99,6 +103,7 @@ async function viewProject(id, fromPoll) {
   if (!fromPoll) requestAnimationFrame(() => window.scrollTo(0, 0));
   document.getElementById('run').onclick = async () => { await api('POST', `/api/projects/${id}/run`); viewProject(id); };
   document.getElementById('budgets-btn').onclick = () => renderBudgets(id, st.budgets);
+  bindStageControls(id, d);
   const stage = document.getElementById('stage');
   if (!cur) stage.innerHTML = `<div class="card"><h2 class="okc">Hoàn tất</h2>${buildPanel(id, d)}</div>`;
   else if (curStatus === 'blocked') renderMissing(stage, id, st.missing || []);
@@ -112,6 +117,51 @@ async function viewProject(id, fromPoll) {
   if (d.has_glb && (cur?.id === 'build_review' || cur?.id === 'release_review' || !cur)) mountViewer(`/files/${id}/output/model.glb?t=${Date.now()}`);
   if (cur?.id === 'spec_review' && d.spec) drawPlan(d.spec, d.spec_polys);
   if (d.running) pollTimer = setTimeout(() => viewProject(id, true), 2000);
+}
+
+// An approval stage can be reopened once the phase before it has finished.
+const canReopen = (d, p, i) => p.approval && !d.running && d.state.phases[d.phases[i - 1].id].status === 'done'
+  && d.state.phases[p.id].status !== 'waiting_approval';
+
+const REOPEN_HELP = {
+  sources_review: 'Bạn xem và chỉnh lại nguồn, ảnh. Khi duyệt lại A1, bước dựng khối sẽ chạy lại bằng AI và tạo model mới.',
+  spec_review: 'Giữ nguyên kế hoạch khối hiện tại để bạn xem và sửa. Khi duyệt lại A2, tool build lại model từ kế hoạch đó, không dựng lại khối.',
+  build_review: 'Giữ nguyên model hiện tại để bạn xem, đổi texture rồi build lại, hoặc yêu cầu sửa.',
+  release_review: 'Giữ nguyên các file phát hành để bạn xem lại trước khi duyệt.',
+};
+
+function bindStageControls(id, d) {
+  const reopenBox = document.getElementById('reopen-box'), restartBox = document.getElementById('restart-box');
+  $app.querySelectorAll('[data-reopen]').forEach(b => b.onclick = () => {
+    const p = d.phases.find(x => x.id === b.dataset.reopen);
+    reopenBox.innerHTML = `<div class="inline-panel"><b>Quay lại ${esc(p.title)}</b>
+      <p class="muted">${esc(REOPEN_HELP[p.id])} Các bước sau nó sẽ trở về trạng thái chờ.</p>
+      <label>Lý do (tuỳ chọn)</label><input id="ro-notes">
+      <p class="row"><button class="primary" id="ro-yes">Quay lại bước này</button><button id="ro-no">Huỷ</button><span id="ro-msg" class="err"></span></p></div>`;
+    document.getElementById('ro-no').onclick = () => { reopenBox.innerHTML = ''; };
+    document.getElementById('ro-yes').onclick = async () => {
+      try { await api('POST', `/api/projects/${id}/reopen`, { phase: p.id, notes: document.getElementById('ro-notes').value.trim() }); viewProject(id); }
+      catch (e) { document.getElementById('ro-msg').textContent = e.message; }
+    };
+  });
+  document.getElementById('restart-open').onclick = () => {
+    restartBox.innerHTML = `<div class="inline-panel"><b>Chạy lại từ đầu</b>
+      <p class="muted">Tìm lại dữ liệu và dựng lại model, tốn thời gian và quota AI. Model hiện tại sẽ bị thay. File bạn tự tải lên được giữ;
+      các yêu cầu sửa trước đó không còn áp dụng.</p>
+      <label>Ghi chú cho AI</label><textarea id="rs-notes" rows="3" placeholder="vd. tháp đồng hồ cao hơn, có hai dãy nhà trong sân">${esc(d.state.notes || '')}</textarea>
+      <details ${d.state.advanced_prompt ? 'open' : ''}><summary class="muted">Nâng cao</summary>
+        <label>Prompt nâng cao (thêm vào mọi bước AI: nghiên cứu, dựng khối, so ảnh, mặt đứng; giám khảo độc lập không thấy)</label>
+        <textarea id="rs-adv" rows="5">${esc(d.state.advanced_prompt || '')}</textarea>
+        <label>Bắt đầu từ</label><select id="rs-start"><option value="research">Nghiên cứu (từ đầu)</option><option value="spec">Dựng khối (giữ dữ liệu đã tìm)</option></select>
+      </details>
+      <p class="row"><button class="danger" id="rs-yes">Xác nhận chạy lại</button><button id="rs-no">Huỷ</button><span id="rs-msg" class="err"></span></p></div>`;
+    document.getElementById('rs-no').onclick = () => { restartBox.innerHTML = ''; };
+    document.getElementById('rs-yes').onclick = async () => {
+      const v = k => document.getElementById(k).value;
+      try { await api('POST', `/api/projects/${id}/restart`, { notes: v('rs-notes'), advanced_prompt: v('rs-adv'), start: v('rs-start') }); viewProject(id); }
+      catch (e) { document.getElementById('rs-msg').textContent = e.message; }
+    };
+  };
 }
 
 function renderSatellite(id, d) {
@@ -489,5 +539,41 @@ async function viewSettings() {
     document.getElementById('s-msg').textContent = 'Đã lưu';
   };
 }
+
+// ---------------------------------------------------------------- about
+function publisherRows(pub) {
+  const web = /^https?:\/\//i.test(pub.website || '') ? `<a href="${esc(pub.website)}" target="_blank" rel="noopener">${esc(pub.website)}</a>` : esc(pub.website);
+  const rows = [['Đơn vị', esc(pub.name)], ['Website', web], ['E-mail', pub.email ? `<a href="mailto:${esc(pub.email)}">${esc(pub.email)}</a>` : ''],
+    ['Điện thoại', esc(pub.phone)], ['Địa chỉ', esc(pub.address)]].filter(r => r[1]);
+  return `<table class="kv">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table>`;
+}
+
+async function viewAbout() {
+  const a = await api('GET', '/api/about'), pub = a.publisher;
+  const hasContact = pub.website || pub.email || pub.phone || pub.address;
+  $app.innerHTML = `
+  <div class="card about-hero">
+    <img src="/static/persona-logo.png" alt="Logo ${esc(pub.name)}">
+    <div><h1>${esc(a.product)}</h1><p class="tagline">${esc(a.tagline)}</p><p class="muted">Phiên bản ${esc(a.version)} · phát hành bởi ${esc(pub.name)}</p></div>
+  </div>
+  <div class="card"><h2>Giới thiệu</h2>
+    <p>${esc(a.product)} tạo mô hình 3D của một công trình từ tên và vị trí. Tool tìm dữ liệu từ các nguồn mở và AI, dựng khối, so sánh với ảnh thật,
+    build trong Blender và xuất file GLB. Bạn duyệt kết quả ở từng bước trước khi đi tiếp.</p>
+    <ul>
+      <li><b>A1 – Nguồn và bản quyền:</b> kiểm tra dữ liệu, ảnh tìm được và cách dùng.</li>
+      <li><b>A2 – Mặt bằng và khối:</b> xem, sửa kế hoạch dựng hình và điểm giám khảo AI.</li>
+      <li><b>A3 – Xem model:</b> xem model 3D, ảnh render và texture.</li>
+      <li><b>A6 – Phát hành:</b> duyệt bộ file cuối cùng kèm ghi công nguồn.</li>
+    </ul></div>
+  <div class="card"><h2>Người phát hành và liên hệ</h2>${publisherRows(pub)}
+    ${hasContact ? '' : '<p class="muted">Chưa có thông tin liên hệ.</p>'}</div>
+  <div class="card"><h2>Nguồn dữ liệu và phần mềm</h2>
+    <p class="muted">OpenStreetMap, Wikidata, Wikimedia Commons, ảnh vệ tinh Esri World Imagery (chỉ để tham khảo), Blender, three.js.
+    Ảnh và dữ liệu thuộc bản quyền của chủ sở hữu; ghi công nằm trong release notes của từng dự án.</p></div>`;
+}
+
+api('GET', '/api/about').then(a => {
+  document.getElementById('foot-text').textContent = `${a.product} ${a.version} · phát hành bởi ${a.publisher.name}`;
+}).catch(() => {});
 
 route();

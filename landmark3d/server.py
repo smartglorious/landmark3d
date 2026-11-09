@@ -41,6 +41,14 @@ def index():
     return html
 
 
+@app.get("/api/about")
+def about():
+    """Product and publisher details, from web/about.json (the one place to edit them)."""
+    from ._version import __version__
+    info = json.loads((WEB / "about.json").read_text(encoding="utf-8"))
+    return dict(info, version=__version__)
+
+
 # ----------------------------------------------------------------------------- settings / connections
 @app.get("/api/settings")
 def get_settings():
@@ -134,7 +142,7 @@ def project(pid: str):
     return {
         "state": st,
         "phases": PHASES,
-        "running": pid in _jobs and _jobs[pid].is_alive(),
+        "running": _running(pid),
         "research": prj.read_json("input/research.json"),
         "sources": prj.read_json("input/sources.json", {"sources": []})["sources"],
         "spec": sp,
@@ -169,15 +177,42 @@ def _run_bg(prj: Project):
         _jobs.pop(prj.id, None)
 
 
+def _running(pid: str) -> bool:
+    return pid in _jobs and _jobs[pid].is_alive()
+
+
 @app.post("/api/projects/{pid}/run")
 def run(pid: str):
     prj = _prj(pid)
-    if pid in _jobs and _jobs[pid].is_alive():
+    if _running(pid):
         return {"started": False, "reason": "already running"}
     th = threading.Thread(target=_run_bg, args=(prj,), daemon=True)
     _jobs[pid] = th
     th.start()
     return {"started": True}
+
+
+@app.post("/api/projects/{pid}/reopen")
+def reopen(pid: str, body: dict = Body(...)):
+    prj = _prj(pid)
+    if _running(pid):
+        raise HTTPException(409, "Dự án đang chạy, chờ xong rồi mới quay lại được.")
+    try:
+        return pipeline.reopen(prj, body.get("phase", ""), body.get("notes", ""))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/api/projects/{pid}/restart")
+def restart(pid: str, body: dict = Body(...)):
+    prj = _prj(pid)
+    if _running(pid):
+        raise HTTPException(409, "Dự án đang chạy, chờ xong rồi mới chạy lại được.")
+    try:
+        pipeline.restart(prj, body.get("notes", ""), body.get("advanced_prompt", ""), body.get("start", "research"))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return run(pid)
 
 
 @app.post("/api/projects/{pid}/approve")

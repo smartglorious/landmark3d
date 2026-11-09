@@ -1,6 +1,6 @@
 [project]
 name = "landmark3d"
-version = "0.2.0"
+version = "0.3.0"
 description = "Landmark name + location -> researched data pack -> gated Blender build -> validated GLB, with a local web app for approvals."
 requires-python = ">=3.11"
 dependencies = [

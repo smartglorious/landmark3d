@@ -258,6 +258,17 @@ def _facts_from_osm(tags: dict) -> dict:
     return out
 
 
+def user_directive(st: dict, notes: bool = True) -> str:
+    """The instructions the person running the tool gave (note and advanced prompt), to append to an AI prompt.
+    Empty when there are none. notes=False leaves out the note, for a prompt that already carries it."""
+    given = [str(st.get(k) or "").strip() for k in (("notes", "advanced_prompt") if notes else ("advanced_prompt",))]
+    given = [g for g in given if g]
+    if not given:
+        return ""
+    return ("\n\nINSTRUCTIONS FROM THE PERSON RUNNING THIS TOOL (follow them, except where they break the required "
+            "output format or contradict what the photos and measurements clearly show):\n" + "\n".join(given))
+
+
 def run(prj: Project) -> dict:
     st = prj.state()
     name, location = st["name"], st["location"]
@@ -433,6 +444,7 @@ def run(prj: Project) -> dict:
     if provider is not None:
         known = {k: v["value"] for k, v in facts.items()}
         prompt = FACTS_PROMPT.format(name=name, location=location, lat=lat, lon=lon, known=json.dumps(known))
+        prompt += user_directive(st)
         try:
             ai_facts, res = ai.ask_json(provider, FACTS_SYSTEM, prompt, validator=_validate_facts, web_search=True)
             prj.write_json("input/ai_facts.json", {"provider": res.provider, "model": res.model, "facts": ai_facts,

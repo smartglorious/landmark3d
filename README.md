@@ -61,6 +61,12 @@ CLI: `python -m landmark3d setup | doctor | new "<name>" "<location>" | run <id>
 
 A change request returns to the phase that owns the problem (A1 → research, A2/A3 → spec, A6 → build); AI receives the note on the next spec run.
 
+**Go back to a stage:** the **Quay lại** button next to A1, A2, A3 or A6 reopens that stage once it has been reached. Its results are kept and only the later phases return to pending, so reopening A2 lets you edit the plan and rebuild without running the massing AI again.
+
+**Restart from the beginning:** **Chạy lại từ đầu** takes a note for the AI and, under *Nâng cao*, an advanced prompt and the starting point (research, or massing with the research kept). The note and prompt replace the earlier ones and go to the research, massing, photo review and facade AI steps; the independent judge does not see them. Earlier change requests stop applying. Files you uploaded are kept.
+
+Product and publisher details on the **Giới thiệu** page come from `landmark3d/web/about.json`.
+
 ## Licences
 
 Web images are used as reference and, when the licence allows (public domain, CC BY, CC BY-SA, or permission you record), as textures. Unknown licences stay reference-only. Attributions go into the release notes.

@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Landmark3D</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta name="theme-color" content="#00003c">
+<title>Landmark3D · Persona</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="stylesheet" href="/static/style.css?v=0.9.0">
 <script type="importmap">
 { "imports": {
   "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
@@ -14,15 +16,20 @@
 </head>
 <body>
 <header>
-  <strong>Landmark3D</strong>
+  <a class="brand" href="#/projects">
+    <img src="/static/persona-logo.png" alt="Persona">
+    <span><strong>Landmark3D</strong><small>by Persona</small></span>
+  </a>
   <nav>
     <a href="#/projects">Dự án</a>
     <a href="#/connections">Kết nối AI</a>
     <a href="#/doctor">Môi trường</a>
     <a href="#/settings">Cài đặt</a>
+    <a href="#/about">Giới thiệu</a>
   </nav>
 </header>
 <main id="app"></main>
-<script type="module" src="/static/app.js?v=0.8.0"></script>
+<footer><span id="foot-text">Landmark3D</span> · <a href="#/about">Giới thiệu và liên hệ</a></footer>
+<script type="module" src="/static/app.js?v=0.9.0"></script>
 </body>
 </html>
