@@ -38,8 +38,10 @@ DEFAULTS = {
     # After the AI massing: render the model from each photo's viewpoint, show photo | render to the AI and let it
     # correct the model. 0 disables the loop.
     "photo_review_rounds": 3,
-    "facade_pass": True,      # AI pass for per-floor facades and detail features after the review rounds
-    "judge": True,            # independent AI score of the final model (spec["quality"])
+    "facade_pass": True,
+    "facade_review_rounds": 2,  # extra facade rounds driven by the judge's errors (kept only if the score rises)      # AI pass for per-floor facades and detail features after the review rounds
+    "judge": True,
+    "auto_textures": True,    # facade photo panels + seamless material swatches from licence-allowed photos            # independent AI score of the final model (spec["quality"])
     # Satellite plan view for the AI: "esri" (Esri World Imagery, reference only, attribution) or "none".
     # Google imagery is never downloaded automatically (its terms forbid it); a screenshot can be uploaded instead.
     "satellite_provider": "esri",

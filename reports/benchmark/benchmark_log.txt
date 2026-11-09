@@ -86,3 +86,7 @@
 21:27:22 cho-binh-tay approved spec_review
 21:27:37 cho-binh-tay A3 waiting: 3766 triangles, 68124 bytes, 12 renders
 21:27:37 DONE {"landmark-81": "A3 waiting: 9901 triangles, 64980 bytes, 12 renders", "cho-binh-tay": "A3 waiting: 3766 triangles, 68124 bytes, 12 renders"}
+07:45:24 project buu-ien-trung-tam-sai-gon
+07:56:55 buu-ien-trung-tam-sai-gon approved spec_review
+07:57:55 buu-ien-trung-tam-sai-gon A3 waiting: 3114 triangles, 620212 bytes, 12 renders
+07:57:55 DONE {"buu-ien-trung-tam-sai-gon": "A3 waiting: 3114 triangles, 620212 bytes, 12 renders"}

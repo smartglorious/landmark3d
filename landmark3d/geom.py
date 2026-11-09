@@ -615,110 +615,251 @@ def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, t
                 ground=facade.get("ground") if lv == 0 else None), mesh, max(0, budget_left - made * 2))
             lv += 1
         return made
-    level_h = float(facade.get("level_height", 3.5))
-    levels = max(1, int((top_z - base_z - 0.6) // level_h))
-    edges, per = _perimeter(poly)
-    if not edges:
-        return 0
-    rules = [dict(r) for r in (facade.get("floors") or [])]
-    if facade.get("ground") and not any(int(r.get("from", 0)) <= 0 <= int(r.get("to", r.get("from", 0))) for r in rules):
-        rules.append(dict(facade["ground"], **{"from": 0, "to": 0}))
-    ent = facade.get("entrance")
-    ent_s = _entrance_spot(edges, per, ent) if ent else None
-    ent_w = float(ent.get("width", 6.0)) if ent else 0.0
-    ent_h = min(float(ent.get("height", level_h * 1.6)), top_z - base_z - 0.5) if ent else 0.0
+    lay = facade_layout(poly, base_z, top_z, facade)
     tris = 0
     made = 0
+    ent = lay["entrance"]
     if ent:
-        p, t, out = _point_at(edges, ent_s)
-        for (ww, hh, off, tag) in ((ent_w + 1.4, ent_h + 0.7, 0.06, "trim"), (ent_w, ent_h, 0.09, "opening")):
+        p, t, out = ent["p"], ent["t"], ent["o"]
+        for (ww, hh, off, tag) in ((ent["w"] + 1.0, ent["h"] + 0.6, 0.06, "trim"), (ent["w"], ent["h"], 0.09, "opening")):
             shape = arch_outline(ww, hh, 12)
             cx, cy = p[0] + out[0] * off, p[1] + out[1] * off
             mesh.f([mesh.v(cx + t[0] * x, cy + t[1] * x, base_z + 0.02 + z) for x, z in shape], tag)
             tris += len(shape) - 2
         made += 1
-    slot_cache = {}
-    for lv in range(levels):
-        rule = next((r for r in rules if int(r.get("from", 0)) <= lv <= int(r.get("to", r.get("from", 0)))), None)
-        kind = (rule or {}).get("opening_type") or facade.get("opening_type", "rect")
-        if kind == "none":
-            continue
-        src = rule if rule and rule.get("opening_type") else facade
-        bay = max(1.0, float(src.get("bay_spacing", facade.get("bay_spacing", 4.0))))
-        if kind == "storefront":
-            w = float(src.get("opening_width", bay * 0.8))
-            h = float(src.get("opening_height", level_h * 0.8))
-            sill = float(src.get("sill", 0.05))
-        else:
-            w = float(src.get("opening_width", bay * 0.45))
-            h = float(src.get("opening_height", w if kind == "square" else min(2.4, level_h * 0.62)))
-            sill = float(src.get("sill", 0.15 if lv == 0 else 0.9))
-        if kind == "square":
-            h = w
-        h = min(h, level_h - sill - 0.2)
-        z0 = base_z + lv * level_h + sill
-        if z0 + h > top_z - 0.3 or h <= 0.3:
-            continue
-        shape = arch_outline(w, h) if kind == "arch" else [(-w / 2, 0), (w / 2, 0), (w / 2, h), (-w / 2, h)]
-        pediment = bool(src.get("pediment"))
-        awning = bool(src.get("awning"))
-        key = (round(bay, 3), round(w, 3))
-        if key not in slot_cache:
-            slot_cache[key] = _slots(edges, per, bay, w)
-        for s, p, t, out in slot_cache[key]:
-            if ent and abs(s - ent_s) < ent_w / 2 + 0.7 + w / 2 and z0 < base_z + ent_h + 0.7:
-                continue                                   # the portal takes this place
-            if tris >= budget_left:
-                return made
-            cx, cy = p[0] + out[0] * 0.05, p[1] + out[1] * 0.05
-            mesh.f([mesh.v(cx + t[0] * x, cy + t[1] * x, z0 + z) for x, z in shape], "opening")
-            tris += len(shape) - 2
-            if pediment:
-                zb, ph, hw = z0 + h + 0.15, 0.45, w / 2 + 0.25
-                mesh.f((mesh.v(cx - t[0] * hw + out[0] * 0.02, cy - t[1] * hw + out[1] * 0.02, zb),
-                        mesh.v(cx + t[0] * hw + out[0] * 0.02, cy + t[1] * hw + out[1] * 0.02, zb),
-                        mesh.v(cx + out[0] * 0.02, cy + out[1] * 0.02, zb + ph)), "trim")
-                tris += 1
-            if awning:
-                depth = float(src.get("awning_depth", 1.0))
-                za, zl = z0 + h + 0.45, z0 + h + 0.05
-                aw = w / 2 + 0.15
-                a0 = (cx - t[0] * aw, cy - t[1] * aw)
-                a1 = (cx + t[0] * aw, cy + t[1] * aw)
-                mesh.f((mesh.v(a0[0] + out[0] * depth, a0[1] + out[1] * depth, zl),
-                        mesh.v(a1[0] + out[0] * depth, a1[1] + out[1] * depth, zl),
-                        mesh.v(a1[0], a1[1], za), mesh.v(a0[0], a0[1], za)), "accent")
-                tris += 2
-            made += 1
+    for win in lay["windows"]:
+        if tris >= budget_left:
+            break
+        p, t, out, w, h, z0 = win["p"], win["t"], win["o"], win["w"], win["h"], win["z0"]
+        shape = arch_outline(w, h) if win["kind"] == "arch" else [(-w / 2, 0), (w / 2, 0), (w / 2, h), (-w / 2, h)]
+        cx, cy = p[0] + out[0] * 0.05, p[1] + out[1] * 0.05
+        mesh.f([mesh.v(cx + t[0] * x, cy + t[1] * x, z0 + z) for x, z in shape], "opening")
+        tris += len(shape) - 2
+        hw = win["frame_half"]                           # pediment / awning never wider than the bay allows
+        if win["pediment"]:
+            zb, ph = z0 + h + 0.12, 0.4
+            mesh.f((mesh.v(cx - t[0] * hw + out[0] * 0.02, cy - t[1] * hw + out[1] * 0.02, zb),
+                    mesh.v(cx + t[0] * hw + out[0] * 0.02, cy + t[1] * hw + out[1] * 0.02, zb),
+                    mesh.v(cx + out[0] * 0.02, cy + out[1] * 0.02, zb + ph)), "trim")
+            tris += 1
+        if win["awning"]:
+            depth = win["awning_depth"]
+            za, zl = z0 + h + 0.45, z0 + h + 0.05
+            a0 = (cx - t[0] * hw, cy - t[1] * hw)
+            a1 = (cx + t[0] * hw, cy + t[1] * hw)
+            mesh.f((mesh.v(a0[0] + out[0] * depth, a0[1] + out[1] * depth, zl),
+                    mesh.v(a1[0] + out[0] * depth, a1[1] + out[1] * depth, zl),
+                    mesh.v(a1[0], a1[1], za), mesh.v(a0[0], a0[1], za)), "accent")
+            tris += 2
+        made += 1
     return made
 
 
-def pilasters(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int):
-    """Flat pilasters (shallow boxes) between window bays, on straight runs only."""
+# ----------------------------------------------------------------------------- facade layout (one grid per facade)
+RUN_TURN_DEG = 20.0          # an outline turning more than this starts a new facade
+PILASTER_GAP = 0.15          # clear distance between a window frame and a pilaster
+
+
+def facade_runs(poly, max_turn_deg: float = RUN_TURN_DEG):
+    """Split an outline into facades: maximal runs of edges with no sharp turn (a curved front is one facade).
+    Each run: {"edges": [(a, b, ln, s0)], "L": length, "closed": bool}."""
+    poly = ensure_ccw(poly)
+    n = len(poly)
+    E = []
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        ln = math.dist(a, b)
+        if ln > 1e-6:
+            E.append((a, b, ln, ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)))
+    if not E:
+        return []
+
+    def turn(i):
+        d0, d1 = E[i - 1][3], E[i][3]
+        return math.degrees(math.acos(max(-1.0, min(1.0, d0[0] * d1[0] + d0[1] * d1[1]))))
+    corners = [i for i in range(len(E)) if turn(i) > max_turn_deg]
+    if not corners:
+        order, closed = [list(range(len(E)))], True
+    else:
+        order, closed = [], False
+        for k, c in enumerate(corners):
+            nxt = corners[(k + 1) % len(corners)]
+            idx, i = [], c
+            while True:
+                idx.append(i)
+                i = (i + 1) % len(E)
+                if i == nxt:
+                    break
+            order.append(idx)
+    runs = []
+    for idx in order:
+        edges, s0 = [], 0.0
+        for i in idx:
+            a, b, ln, _ = E[i]
+            edges.append((a, b, ln, s0))
+            s0 += ln
+        runs.append({"edges": edges, "L": s0, "closed": closed})
+    return runs
+
+
+def facade_layout(poly, base_z, top_z, facade):
+    """Where every punched-facade element goes. One bay grid per facade run, symmetric about the run's centre;
+    pilasters on bay boundaries, windows at bay centres (narrower than a bay minus a pilaster), the entrance in
+    the central bay(s), heights clear of string courses and the cornice. Returns elements plus any issues."""
+    level_h = float(facade.get("level_height", 3.5))
+    bay = max(1.0, float(facade.get("bay_spacing", 4.0)))
+    cor = float(facade.get("cornice", 0) or 0)
     pl = facade.get("pilasters")
-    if not pl:
+    pl = (pl if isinstance(pl, dict) else {}) if pl else None
+    pil_w = float(pl.get("width", 0.7)) if pl else 0.0
+    pil_every = max(1, int(pl.get("every", 1))) if pl else 1
+    bands = bool(facade.get("bands"))
+    levels = max(1, int((top_z - base_z - cor + 0.3) // level_h))
+    rules = [dict(r) for r in (facade.get("floors") or [])]
+    if facade.get("ground") and not any(int(r.get("from", 0)) <= 0 <= int(r.get("to", r.get("from", 0))) for r in rules):
+        rules.append(dict(facade["ground"], **{"from": 0, "to": 0}))
+    out = {"runs": [], "windows": [], "pilasters": [], "entrance": None, "issues": [], "bay": bay}
+    runs = [r for r in facade_runs(poly) if r["L"] >= 0.7 * bay]
+    if not runs:
+        return out
+    ent = facade.get("entrance")
+    ent_run = None
+    if ent:
+        if ent.get("facing_deg") is not None:
+            f = math.radians(float(ent["facing_deg"]))
+            want = (math.cos(f), math.sin(f))
+
+            def facing_score(r):
+                p_, t_, o_ = _point_at(r["edges"], r["L"] / 2)
+                return (o_[0] * want[0] + o_[1] * want[1]) * min(r["L"], 30.0)
+            ent_run = max(range(len(runs)), key=lambda k: facing_score(runs[k]))
+        else:
+            ent_run = max(range(len(runs)), key=lambda k: runs[k]["L"])
+    for ri, run in enumerate(runs):
+        n = max(1, int(round(run["L"] / bay)))
+        b = run["L"] / n
+        out["runs"].append({"L": run["L"], "n": n, "b": b})
+        # entrance: the central bay(s) of its run
+        ent_bays = set()
+        ent_top = base_z
+        if ent and ri == ent_run:
+            need = float(ent.get("width", 6.0)) + pil_w + 2 * PILASTER_GAP
+            k = min(n, max(1, math.ceil(need / b)))
+            if (n - k) % 2:
+                k = k + 1 if k < n else k - 1
+            k = max(1, k)
+            first = (n - k) // 2
+            ent_bays = set(range(first, first + k))
+            span = k * b
+            w = min(float(ent.get("width", 6.0)), span - pil_w - 2 * PILASTER_GAP)
+            h = min(float(ent.get("height", level_h * 1.6)), top_z - base_z - cor - 0.8)
+            if w >= 1.0 and h >= 2.0:
+                p_, t_, o_ = _point_at(run["edges"], (first + k / 2) * b)
+                ent_top = base_z + h + 0.6
+                out["entrance"] = {"run": ri, "s": (first + k / 2) * b, "w": w, "h": h, "p": p_, "t": t_, "o": o_,
+                                   "z_top": ent_top, "bays": sorted(ent_bays)}
+            else:
+                ent_bays = set()
+        # pilasters on bay boundaries (corners included), none inside the entrance span
+        if pl:
+            bounds = range(n) if run["closed"] else range(n + 1)
+            for i in bounds:
+                if i % pil_every:
+                    continue
+                if any(j in ent_bays for j in (i - 1, i)) and (i - 1 in ent_bays and i in ent_bays):
+                    continue
+                s_ = i * b
+                out["pilasters"].append({"run": ri, "s": s_, "w": pil_w, "z0": base_z, "z1": top_z - cor,
+                                         "pt": _point_at(run["edges"], min(max(s_, 1e-6), run["L"] - 1e-6))})
+        # windows at bay centres
+        clear = b - pil_w - 2 * PILASTER_GAP
+        for lv in range(levels):
+            rule = next((r for r in rules if int(r.get("from", 0)) <= lv <= int(r.get("to", r.get("from", 0)))), None)
+            kind = (rule or {}).get("opening_type") or facade.get("opening_type", "rect")
+            if kind == "none":
+                continue
+            src = rule if rule and rule.get("opening_type") else facade
+            every = max(1, int(round(float(src.get("bay_spacing", bay)) / bay))) if src.get("bay_spacing") else 1
+            if kind == "storefront":
+                w = float(src.get("opening_width", b * 0.8))
+                h = float(src.get("opening_height", level_h * 0.8))
+                sill = float(src.get("sill", 0.05))
+            else:
+                w = float(src.get("opening_width", b * 0.45))
+                h = float(src.get("opening_height", w if kind == "square" else min(2.4, level_h * 0.62)))
+                sill = float(src.get("sill", 0.15 if lv == 0 else 0.9))
+            if kind == "square":
+                h = w
+            if w > clear:
+                out["issues"].append(f"floor {lv}: opening width {w:g} m > clear bay {clear:.2f} m - narrowed")
+                w = clear
+            z_floor = base_z + lv * level_h
+            ceiling = min(z_floor + level_h - (0.3 if bands else 0.15), top_z - cor - 0.2)
+            pediment, awning = bool(src.get("pediment")), bool(src.get("awning"))
+            head = 0.55 if pediment else (0.5 if awning else 0.0)
+            z0 = z_floor + sill
+            if z0 + h + head > ceiling:
+                h = ceiling - head - z0
+            if w < 0.4 or h < 0.6:
+                continue
+            centre = (n - 1) / 2
+            for i in range(n):
+                if every > 1 and round(abs(i - centre)) % every:
+                    continue
+                if i in ent_bays and z0 < ent_top:
+                    continue
+                s_ = (i + 0.5) * b
+                p_, t_, o_ = _point_at(run["edges"], s_)
+                # a window must sit on one straight piece of a curved facade (no wrapping round a sharp bend)
+                _, d0, _ = _point_at(run["edges"], max(0.0, s_ - w / 2))
+                _, d1, _ = _point_at(run["edges"], min(run["L"], s_ + w / 2))
+                if d0[0] * d1[0] + d0[1] * d1[1] < 0.9:
+                    continue
+                out["windows"].append({"run": ri, "s": s_, "w": w, "h": h, "z0": z0, "kind": kind, "lv": lv,
+                                       "p": p_, "t": t_, "o": o_, "pediment": pediment, "awning": awning,
+                                       "awning_depth": float(src.get("awning_depth", 1.0)),
+                                       "frame_half": min(w / 2 + 0.25, (b - pil_w) / 2 - 0.05)})
+    return out
+
+
+def check_facade(lay) -> list[str]:
+    """Deterministic consistency check of a layout: no window overlaps a pilaster, the entrance or another window,
+    and nothing runs past its facade. Returns the list of violations (empty = consistent)."""
+    errs = []
+    eps = 1e-6
+    for w in lay["windows"]:
+        a0, a1 = w["s"] - w["frame_half"], w["s"] + w["frame_half"]
+        for pl in lay["pilasters"]:
+            if pl["run"] == w["run"] and a0 < pl["s"] + pl["w"] / 2 - eps and pl["s"] - pl["w"] / 2 + eps < a1:
+                errs.append(f"window at s={w['s']:.1f} floor {w['lv']} overlaps a pilaster at s={pl['s']:.1f}")
+        e = lay["entrance"]
+        if e and e["run"] == w["run"] and abs(w["s"] - e["s"]) < e["w"] / 2 + 0.5 + w["frame_half"]                 and w["z0"] < e["z_top"]:
+            errs.append(f"window at s={w['s']:.1f} floor {w['lv']} overlaps the entrance")
+    by_slot = {}
+    for w in lay["windows"]:
+        by_slot.setdefault((w["run"], w["lv"]), []).append(w)
+    for ws in by_slot.values():
+        ws.sort(key=lambda x: x["s"])
+        for a, b in zip(ws, ws[1:]):
+            if a["s"] + a["frame_half"] > b["s"] - b["frame_half"] + eps:
+                errs.append(f"windows at s={a['s']:.1f} and s={b['s']:.1f} (floor {a['lv']}) overlap")
+    return errs
+
+
+def pilasters(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int):
+    """Flat pilasters (shallow boxes) on the bay boundaries of the facade layout (shared with the windows)."""
+    if not facade.get("pilasters"):
         return 0
-    pl = pl if isinstance(pl, dict) else {}
-    edges, per = _perimeter(poly)
-    if not edges:
-        return 0
-    bay = max(1.0, float(facade.get("bay_spacing", 4.0))) * max(1, int(pl.get("every", 1)))
-    w = float(pl.get("width", 0.7)) / 2
+    pl = facade["pilasters"] if isinstance(facade["pilasters"], dict) else {}
     dep = float(pl.get("depth", 0.22))
-    count = int((per - 0.5) // bay)
-    if count < 1:
-        return 0
-    sp = per / count
+    cor = float(facade.get("cornice", 0) or 0)
+    lay = facade_layout(poly, base_z, top_z + cor, facade)      # top_z here is already below the cornice
     used = 0
-    for c in range(count):
+    for p_ in lay["pilasters"]:
         if used + 6 > budget_left:
             break
-        s = c * sp
-        _, d0, _ = _point_at(edges, max(0.0, s - w))
-        _, d1, _ = _point_at(edges, min(per, s + w))
-        if d0[0] * d1[0] + d0[1] * d1[1] < 0.97:
-            continue
-        p, t, out = _point_at(edges, s)
+        p, t, out = p_["pt"]
+        w = p_["w"] / 2
         a = (p[0] - t[0] * w, p[1] - t[1] * w)
         b = (p[0] + t[0] * w, p[1] + t[1] * w)
         ao = (a[0] + out[0] * dep, a[1] + out[1] * dep)

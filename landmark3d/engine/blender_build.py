@@ -317,7 +317,12 @@ def add_panels(job, meshes, warnings):
             d = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)
             out = (d[1], -d[0])
             edges.append((a, b, ln, out))
-        if pn["side"] == "all":
+        if pn.get("edge_index") is not None:          # an exact wall face (automatic facade textures)
+            i = int(pn["edge_index"]) % n
+            a_, b_ = ring[i], ring[(i + 1) % n]
+            ln_ = math.dist(a_, b_)
+            chosen = [(a_, b_, ln_, ((b_[1] - a_[1]) / ln_, -(b_[0] - a_[0]) / ln_))] if ln_ > 0.5 else []
+        elif pn["side"] == "all":
             chosen = [e for e in edges if e[2] >= 0.5 * max(x[2] for x in edges)]
         else:
             sd = SIDE_DIR[pn["side"]]
@@ -329,7 +334,7 @@ def add_panels(job, meshes, warnings):
         z1 = pn["z1"] if pn.get("z1") is not None else part["base_z"] + part["height"]
         u0, v0, u1, v1 = pn["uv"]
         for a, b, ln, out in chosen:
-            o = (out[0] * 0.03, out[1] * 0.03)
+            o = (out[0] * 0.08, out[1] * 0.08)            # in front of the window panels (5 cm)
             base = len(verts)
             verts += [(a[0] + o[0], a[1] + o[1], z0), (b[0] + o[0], b[1] + o[1], z0),
                       (b[0] + o[0], b[1] + o[1], z1), (a[0] + o[0], a[1] + o[1], z1)]
@@ -420,6 +425,28 @@ def main():
                 fallback = {"wall": "wall", "roof": "roof", "trim": "trim"}.get(k, "trim")
                 tag_mat[k] = fallback if fallback in mats else next(iter(mats))
                 warnings.append(f"part {part['id']}: material '{v}' unknown, used '{tag_mat[k]}'")
+        covered = [pn for pn in job.get("panels") or [] if pn.get("part") == part["id"] and pn.get("edge_index") is not None]
+        if covered:                                   # a real photo shows this face: drop the generated detail on it
+            ring = geom.ensure_ccw(poly)
+            segs = [(ring[int(pn["edge_index"]) % len(ring)], ring[(int(pn["edge_index"]) + 1) % len(ring)]) for pn in covered]
+
+            def on_covered_face(face):
+                for a_, b_ in segs:
+                    dx, dy = b_[0] - a_[0], b_[1] - a_[1]
+                    ln = math.hypot(dx, dy) or 1.0
+                    ok = True
+                    for vi in face:
+                        x, y, _ = gm.verts[vi]
+                        t_ = ((x - a_[0]) * dx + (y - a_[1]) * dy) / (ln * ln)
+                        off = ((x - a_[0]) * dy - (y - a_[1]) * dx) / ln          # + = outside (CCW ring)
+                        if not (-0.02 <= t_ <= 1.02 and -0.05 <= off <= 1.2):
+                            ok = False
+                            break
+                    if ok:
+                        return True
+                return False
+            keep = [(f, t) for f, t in zip(gm.faces, gm.tags) if t in ("wall", "roof") or not on_covered_face(f)]
+            gm.faces, gm.tags = [f for f, _ in keep], [t for _, t in keep]
         for t in set(gm.tags):                        # feature tags name their material directly ("m:<name>")
             if t.startswith("m:"):
                 tag_mat[t] = t[2:] if t[2:] in mats else tag_mat["trim"]

@@ -153,3 +153,43 @@ Both now run end to end with no user input:
 - **Remaining gaps are modelling primitives:**
   - Chợ Bình Tây needs stepped/skirt roofs, deep eaves and a multi-tier pavilion.
   - Landmark 81 needs bundled tubes and a lattice mast.
+
+---
+
+# Facade logic and automatic textures, 2026-11-09
+
+**Facade grid.** Windows, pilasters and the entrance used to be laid out independently. Each had its own spacing along the whole perimeter, so on Bưu điện the ground-floor windows (3.6 m) landed on the pilasters (2.8 m).
+- Now every facade run has ONE symmetric bay grid shared by all elements, with clamped widths and heights.
+- `check_facade` verifies there are no overlaps; the AI's facade answers are validated with it.
+- Tests: `tests/test_facade_grid.py`, which uses the exact Bưu điện wing spec that failed.
+
+**Judge-gated facade rounds (Bưu điện, Opus).**
+
+| Facade round | Result | Judge overall /10 | Facade /5 |
+|---|---|---|---|
+| 1 | kept | 5 → 6 | 2 → 3 |
+| 2 (from the judge's errors) | kept | 6 → 6 | 3 → 3 |
+| 3 | **discarded** | 6 → 5 | 3 → 2 |
+
+`facade_issues` reported 0 conflicts on the final spec.
+
+**Automatic textures.** All research photos were already licence-allowed (CC BY / BY-SA / PD, 1280–1440 px). The tool simply never used them as textures.
+
+| | v1: whole faces rectified | v2: clean bay repeated on the grid, unique faces, QA, harmonise |
+|---|---|---|
+| Bưu điện | 2 faces | 11 (10 bay, 1 unique), 1 dropped by QA |
+| Nhà hát | 3 | 14 (10 bay, 4 unique) |
+| Đức Bà | 4 | 21 (17 bay, 4 unique) + roof swatch, 4 dropped |
+| Dinh Độc Lập | 1 | 13 (12 bay, 1 unique), 1 dropped |
+| Chợ Bình Tây | 2 | 3 (unique) + swatch, 16 bay faces dropped by QA |
+
+What v1 got wrong:
+- Whole curved fronts were stretched onto flat faces, and the portal was duplicated.
+- Trees were baked into the textures.
+- Photo faces sat next to generated stripes.
+
+v2 is consistent per part and free of trees on the bay-tiled faces. Still open:
+- Parts not photographed keep plain materials.
+- Colour is balanced for brightness only.
+- Chợ Bình Tây's bays are mostly rejected by QA.
+- No judge scores were run for the v2 texture builds (visual check only).

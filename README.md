@@ -27,12 +27,12 @@ CLI: `python -m landmark3d doctor | new "<name>" "<location>" | run <id> | statu
 | Phase | What happens | Stops for |
 |---|---|---|
 | setup, doctor | folders; Blender headless + glTF/Draco, MCP, Node, AI keys | a missing required tool |
-| research | Nominatim → OSM object footprint (OSM API) + `building:part`s (Overpass) → Wikidata (height, floors) → Commons photos with licences → AI web research with citations (optional cross-check by the second provider) | — |
+| research | Nominatim → OSM object footprint (OSM API) + `building:part`s (Overpass) → Esri satellite view → Wikidata (height, floors) → Commons photos with licences → AI web research with citations (optional cross-check) → **AI footprint finder** when OSM has no matching outline | — |
 | **A1** sources_review | facts with sources; photos with licence and allowed use; assign a licensed photo as a texture | approval |
 | completion | input gate: location, footprint, a height, roof form, at least one photo | missing items → form in the app |
 | spec | generic parts (main footprint, OSM parts, AI-proposed towers/domes/wings from photos + facts), roofs, facades, materials, provenance, list of module defaults | — |
 | **A2** spec_review | plan drawing, parts table, editable JSON | approval / change request |
-| build | Blender headless: parts, roofs (flat+parapet, gable, hip, pyramid, dome, shed), openings, materials/textures, Draco GLB (falls back to plain), .blend, 8 QA renders, budget gates | failed gate |
+| build | **automatic textures from the photos**, then Blender headless: parts, roofs (flat+parapet, gable, hip, pyramid, dome, shed), facades on a bay grid, features, materials/textures, Draco GLB (falls back to plain), .blend, QA renders incl. one per photo viewpoint, budget gates | failed gate |
 | **A3** build_review | 3D viewer (three.js + Draco), renders, numbers | approval / change request (back to spec) |
 | release | checksums, release notes with approvals, texture attributions, module defaults | — |
 | **A6** release_review | final approval | approval |
@@ -49,8 +49,12 @@ Web images are used as reference and, when the licence allows (public domain, CC
 - **Facades**:
   - `opening_type`: `rect`, `arch` or `curtain_wall`. A curtain wall uses the wall material as glass, with mullions every `bay_spacing` and a spandrel band per floor.
   - `cornice` (metres), `bands` (string courses per floor).
-  - `ground`: the ground floor's own openings (`storefront`, `rect` or `arch`), optionally with `awning` in the part's `accent` material.
-  - Windows run along curved outlines too.
+  - `ground` / `floors`: per-floor openings (`storefront`, `rect`, `arch`, `square`, `none`), pediments, awnings; `entrance` (a large arched portal), `pilasters`.
+  - `features` (per part): `disc` (clock faces, rose windows), `panel` (signs, friezes, balconies, canopies), `mast` (flagpoles, antennas, crosses).
+- **Facade grid** (`geom.facade_layout`): every facade (a run of the outline without a sharp turn; a curved front is one facade) gets ONE bay grid, whole bays, symmetric about its centre.
+  - Pilasters stand on the bay lines, windows sit in the bay centres, and the entrance takes the central bay(s). All floors share the grid; a floor may use every 2nd or 3rd bay.
+  - Window, pediment and awning widths are clamped so they never touch a pilaster. Heights stay clear of string courses and the cornice.
+  - `geom.check_facade` verifies that no window overlaps a pilaster, the entrance or another window. `pipeline.facade_issues` sends such problems back to the AI as validation errors.
 - **Tapers and decks**:
   - `taper` on a part: `top_scale`, profile `linear | ease_in | ease_out`, and `top_shift`, for spires, bud or bullet towers and glass pyramids. Facades follow it.
   - Thin decks (≤ 4 m) declared `cantilever_of` a tower may project up to 25 m with ≥ 8% overlap. Use them for helipads, viewing decks and canopies.
@@ -60,6 +64,26 @@ Web images are used as reference and, when the licence allows (public domain, CC
   - a total height that differs from the researched one.
 - **AI massing**: the prompt lists the footprint's edge directions with their share (main street frontage first). Reviewer notes are passed as problems to fix in earlier versions. Materials must be the ones the parts use. Curtain-wall glass is normalised to metallic ≥ 0.85 and roughness ≤ 0.1.
 - **QA renders**: neutral sky (dark ground, bright horizon, blue zenith) so glass reflects something; cameras frame the whole building.
+
+## Quality loop (AI, measured)
+
+After the massing, the spec phase runs these steps, all with the same AI provider:
+1. **Photo triage**: one numbered contact sheet of all candidate photos. Interiors, details and historic photos that differ from today are dropped (at most 6 kept; your own photos are always kept).
+2. **Viewpoint matching** and **photo review rounds** (see below).
+3. **Best candidate**: when the rounds never reach "match", every candidate is rendered and the AI picks the best. The last revision is not assumed to be best.
+4. **Independent judge**: a separate call that cannot edit. It scores plan, silhouette, heights, facade and materials (1–5), gives an overall score out of 10 and lists the 3 biggest errors. The result goes in `spec.quality` and is shown on A2.
+5. **Facade pass + review rounds** (`facade_pass`, `facade_review_rounds`, default 2):
+   - The facade pass writes per-floor facades and features without touching the geometry.
+   - Later rounds get the judge's errors and photo | model sheets.
+   - A round is kept only if the judge's overall score rises, or stays equal with a facade score at least as high. Otherwise the previous facades stay and the loop stops.
+6. **Structure, material and facade checks** run on every AI answer (invalid answers are retried, then rejected). An AI failure (quota, sign-in) is an `ai_failed` error that blocks A2.
+
+## AI footprint finder
+
+When OSM has no outline for the landmark, or only one chosen by position (name does not match), research proceeds as follows.
+1. Draw every building outline around the point, numbered, on the satellite view. Overpass is used, with the OSM API map call as fallback.
+2. Ask the AI, with the photos and the researched description, which outline(s) are the landmark itself, or to **trace** the footprint on the metre grid.
+3. High or medium confidence is used; low confidence still goes to the input gate. A traced footprint is labelled "AI traced on Esri imagery", not OSM data.
 
 ## Satellite plan view and photo review
 
@@ -74,6 +98,21 @@ Web images are used as reference and, when the licence allows (public domain, CC
   2. Per round, the AI sees photo | model pairs from those viewpoints, plus satellite | model-from-above at the same extent and scale. It lists the differences and returns a corrected model. Structure errors are fixed within the round. Viewpoints can be corrected when the first match was wrong.
   3. Comparison sheets are shown on the A2 page. The viewpoints are stored in the spec, so the build also renders `photo1.png`…; these are the like-for-like views for A3.
 - **Model**: spec and review work best with the strongest model (Kết nối AI → Claude → model `opus`). Each run takes about 6–8 minutes and counts against the plan's usage.
+
+## Automatic textures (from the reference photos)
+
+At build time (`"auto_textures": true`, `autotex.run_v2`), the model is textured from the research photos whose licence allows texture use: CC BY, CC BY-SA, public domain, or your own. Each one is credited in the release notes.
+1. **Plan** (AI): the photos carry a 0–1 grid, and the AI is told which faces each photo shows (from the matched camera directions). Per part it chooses:
+   - `bays`: ONE clean, unobstructed bay (bay line to bay line, ground to cornice). The tool rectifies it (perspective) and repeats it along the **same bay grid as the geometry** on every face of the part, sides and back included, so photo windows line up with the model's grid.
+   - `unique`: a one-off face (an entrance pavilion), rectified whole.
+   - `none`: the part keeps its plain material.
+   - Roof swatches.
+2. **QA** (AI): all face textures on one numbered contact sheet. Bad ones (wrong region, distorted, mostly hidden) are dropped; occluded spans on unique faces are repaired from the mirrored symmetric half.
+3. **Harmonise**: all photo textures are brought to the same brightness.
+4. **Place**: each face texture is a panel on the exact face, 8 cm in front of the wall. Generated windows, pilasters and features on that face are dropped, because the photo shows them.
+   - Swatches must match their material's colour (mean sRGB distance ≤ 70) or are dropped; kept ones are colour-balanced and made seamless.
+
+Auto textures are regenerated when the spec changes. Textures you add by hand win for the same material or face. Files: `input/textures/auto_*.jpg`; the gridded photos and the QA sheet are in `reports/autotex/`.
 
 ## Textures
 
@@ -90,13 +129,17 @@ After adding textures, press **Build lại với texture** (needs A2 approved). 
 .\.venv\Scripts\python.exe -m pytest -q tests
 ```
 
-## Known limits (v0.1)
+## Known limits
 
 - AI over web login was tested live here (Claude Code on a Claude Pro account, Codex on a ChatGPT account, web search on). The environment-variable route uses the official SDKs and is tested only with fakes (no such variables on this machine).
 - CLI calls take 10–40 s each and count against the signed-in plan's usage limits.
 - `cli_path` (a non-standard CLI location) can only be set in `~/.landmark3d/settings.json`, not from the web page.
 - Without AI, the massing is what OSM provides (outline or `building:part`s) plus user answers; towers/domes not mapped in OSM need AI or a spec edit.
-- Facades are simple (rectangular or arched openings per level); landmark-specific ornament (clock faces, reliefs) can be added as photo panels, but is not modelled in 3D; vaulted canopies as in the Ben Thanh sample are not generated yet.
+- **Geometry vocabulary:** mansard / multi-tier roofs, deep eaves, balustrades, bundled tubes and lattice masts are not primitives yet. Ornament comes from photo textures, not 3D geometry. Vaulted canopies as in the Ben Thanh sample are not generated.
+- **Photo textures:**
+  - They cover what the photos show. Parts never photographed (attics, backs of towers) keep plain materials.
+  - Colours are balanced for brightness only.
+  - The texture QA can drop most bays on busy sites (Chợ Bình Tây).
+- **Judge scores** are AI judgements and vary between runs; see `reports/benchmark/BENCHMARK.md` for the dev / held-out results.
 - A panel covers a whole face of a part (from the part's outline); it does not follow arches or setbacks inside that face.
-- Photo-based measurement analyzers and photo-match acceptance (docs P5–P6) are not built yet.
 - Overpass can be slow; the footprint comes from the OSM object Nominatim matched, so research still works when Overpass times out.

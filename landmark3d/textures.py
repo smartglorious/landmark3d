@@ -31,7 +31,9 @@ def load(prj: Project) -> dict:
 
 
 def save(prj: Project, data: dict) -> None:
-    prj.write_json("input/textures.json", {"textures": [t for t in data["textures"] if not t.get("from_sources")]})
+    old = prj.read_json("input/textures.json", {})
+    prj.write_json("input/textures.json", {"textures": [t for t in data["textures"] if not t.get("from_sources")],
+                                           **({"auto_for": old["auto_for"]} if old.get("auto_for") else {})})
 
 
 def licence_allows(licence: str, project_noncommercial: bool = True) -> bool:
@@ -167,5 +169,5 @@ def build_job(prj: Project, max_px: int = 2048) -> tuple[dict, list, str | None]
             panels.append(t)
     atlas, uv = pack_panels(prj, panels, max_px)
     job_panels = [{"id": t["id"], "part": t["part"], "side": t["side"], "z0": t.get("z0"), "z1": t.get("z1"),
-                   "uv": uv[t["id"]]} for t in panels if t["id"] in uv]
+                   "edge_index": t.get("edge_index"), "uv": uv[t["id"]]} for t in panels if t["id"] in uv]
     return repeat, job_panels, atlas

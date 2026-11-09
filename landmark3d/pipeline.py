@@ -237,20 +237,40 @@ def build_spec(prj: Project) -> dict:
             if use_judge:
                 quality = judge(prj, provider, massing, photos, sat_imgs, main, materials, st)
             if photos and settings_mod.load().get("facade_pass", True):
-                refined, facade_log = facade_pass(prj, provider, massing, photos, massing_check, st)
-                if refined is not massing and use_judge and (quality or {}).get("overall") is not None:
-                    # keep the facade pass only if the independent score does not drop
+                rounds_f = 1 + max(0, int(settings_mod.load().get("facade_review_rounds", 2) or 0))
+                for fr in range(rounds_f):
+                    q_ok = use_judge and (quality or {}).get("overall") is not None
+                    refined, facade_log = facade_pass(
+                        prj, provider, massing, photos, massing_check, st, main=main,
+                        feedback=(quality or {}).get("errors") if fr > 0 and q_ok else None,
+                        sheets=[prj.root / i for i in (quality or {}).get("images", [])] if fr > 0 and q_ok else None)
+                    facade_log["round"] = fr + 1
+                    if refined is massing:
+                        review_log.append(facade_log)
+                        break
+                    if not q_ok:
+                        massing = refined
+                        review_log.append(facade_log)
+                        break
+                    # keep a facade round only if the independent judge scores it at least as well (overall, then
+                    # the facade aspect); otherwise stop and keep the previous facades
                     q2 = judge(prj, provider, refined, photos, sat_imgs, main, materials, st)
-                    before, after = quality.get("overall"), (q2 or {}).get("overall")
-                    if after is not None and after >= before:
+                    b_all, a_all = quality.get("overall"), (q2 or {}).get("overall")
+                    b_fac = (quality.get("scores") or {}).get("facade", 0)
+                    a_fac = ((q2 or {}).get("scores") or {}).get("facade", 0)
+                    better = a_all is not None and (a_all > b_all or (a_all == b_all and a_fac >= b_fac))
+                    if better:
                         massing, quality = refined, q2
-                        facade_log["result"] = f"kept: judge {before} -> {after}"
+                        facade_log["result"] = f"kept: judge {b_all} -> {a_all}, facade {b_fac} -> {a_fac}"
+                        review_log.append(facade_log)
                     else:
-                        facade_log["result"] = f"discarded: judge {before} -> {after}; facades before the pass kept"
+                        facade_log["result"] = (f"discarded: judge {b_all} -> {a_all}, facade {b_fac} -> {a_fac}; "
+                                                f"previous facades kept")
                         facade_log["verdict"] = (facade_log.get("verdict") or "") + " (discarded)"
-                elif refined is not massing:
-                    massing = refined
-                review_log.append(facade_log)
+                        review_log.append(facade_log)
+                        break
+                    if a_fac is not None and a_fac >= 4:
+                        break
             ai_parts = massing["parts"]
             photo_views_out = massing.get("views") or []
             if ai_parts:
@@ -673,13 +693,42 @@ def normalise_glass(massing: dict) -> None:
                 m["roughness"] = min(float(m.get("roughness", 0.1) or 0.1), 0.1)
 
 
-def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: dict):
-    """A second, facade-only AI pass: per-floor facades and visible details (features) for every part, from the
-    photos. Geometry (footprints, heights, roofs) is kept exactly; an invalid answer leaves the model unchanged."""
+def facade_issues(massing: dict, main) -> list[str]:
+    """Deterministic facade check of every punched facade: the layout engine's own corrections (e.g. a window wider
+    than its bay) and any overlap between windows, pilasters and the entrance. Empty = consistent."""
+    out = []
+    for p in massing.get("parts", []):
+        fac = p.get("facade") or {}
+        if not fac or fac.get("opening_type") == "curtain_wall" or fac.get("openings") is False \
+                or geom.is_tapered(p.get("taper")):
+            continue
+        try:
+            poly = geom.footprint_polygon(p["footprint"], main)
+        except Exception:
+            continue
+        lay = geom.facade_layout(poly, float(p["base_z"]), float(p["base_z"]) + float(p["height"]), fac)
+        out += [f"part {p['id']}: {m}" for m in lay["issues"] + geom.check_facade(lay)]
+    return out
+
+
+def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: dict, feedback=None, sheets=None,
+                main=None):
+    """A facade-only AI pass: per-floor facades and visible details (features) for every part, from the photos
+    (and, in review rounds, from photo | model comparison sheets plus the judge's list of errors). Geometry
+    (footprints, heights, roofs) is kept exactly; an invalid or inconsistent answer leaves the model unchanged."""
     entry = {"step": "facade", "round": None}
     prompt = agent.FACADE_PROMPT.format(
         name=st["name"], location=st["location"],
         massing=json.dumps({"parts": massing["parts"], "materials": massing.get("materials", {})}, ensure_ascii=False))
+    if feedback:
+        prompt += ("\n\nREVIEW ROUND. The first attached images compare the photos (left) with the current model "
+                   "(right) from the same viewpoints. An independent reviewer found these errors - fix the facade "
+                   "ones; keep what already matches:\n- " + "\n- ".join(str(e) for e in feedback))
+    prompt += ("\n\nFacade logic (checked automatically - inconsistent answers are rejected): every facade gets ONE bay "
+               "grid (bay_spacing; the facade length is divided into whole bays, symmetric about its centre). Pilasters "
+               "stand on the bay lines; each window sits in the middle of a bay, so opening_width must be smaller than "
+               "bay_spacing minus the pilaster width minus 0.3 m. A floor may use every 2nd or 3rd bay (bay_spacing = 2x "
+               "or 3x the facade's), never a different rhythm. The entrance takes the central bay(s).")
 
     def merged(o):
         by_id = {p.get("id"): p for p in o.get("parts", []) if isinstance(p, dict)}
@@ -692,8 +741,9 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         return dict(massing, parts=parts, materials=mats)
 
     try:
-        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=lambda o: check(merged(o)),
-                             images=photos[:4], retries=2)
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
+                             validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main) if main else []),
+                             images=list(sheets or [])[:4] + photos[:4], retries=2)
     except Exception as exc:
         entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
         return massing, entry
@@ -854,6 +904,14 @@ def run_phase(prj: Project, phase: str) -> str:
                                          + (f"; {len(errs)} STRUCTURE ERROR(S): fix in A2 (edit spec or request changes)"
                                             if errs else ""))
         elif phase == "build":
+            if settings_mod.load().get("auto_textures", True):
+                provider = ai.get("vision")
+                if provider is not None:
+                    try:
+                        from . import autotex
+                        autotex.run_v2(prj, provider)
+                    except Exception as exc:          # textures are an enhancement: never block the build
+                        prj.log("auto textures failed", {"error": str(exc)[:300]})
             res = engine_runner.build(prj)
             if res.get("ok"):
                 prj.set_phase(phase, "done", f"{res['triangles']} triangles, {res['bytes']} bytes, "
