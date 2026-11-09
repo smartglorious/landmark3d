@@ -13,6 +13,8 @@ Every call returns text; structured results are extracted as JSON and validated 
 from __future__ import annotations
 
 import base64
+import contextlib
+import contextvars
 import json
 import os
 import re
@@ -21,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import settings as settings_mod
@@ -37,6 +39,53 @@ class AIResult:
     provider: str
     model: str
     citations: list
+    meta: dict = field(default_factory=dict)              # what the connector knows about the call (turns, tokens)
+
+
+class CallLog:
+    """One line per AI attempt in a project's logs/ai_calls.jsonl: step, attempt, outcome, durations, and why an answer
+    was rejected. Prompts and replies are not stored, only their lengths. A logging failure never affects a run."""
+
+    def __init__(self, path: Path, phase: str):
+        self.path, self.phase = Path(path), phase
+        self.entries: list[dict] = []
+        self.requests = 0
+
+    def new_request(self) -> int:
+        self.requests += 1
+        return self.requests
+
+    def record(self, entry: dict) -> None:
+        entry = {"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "phase": self.phase, **entry}
+        self.entries.append(entry)
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def summary(self) -> dict:
+        by_step: dict[str, dict] = {}
+        for e in self.entries:
+            s = by_step.setdefault(e["step"], {"calls": 0, "rejected": 0, "seconds": 0.0})
+            s["calls"] += 1
+            s["rejected"] += e["outcome"] != "ok"
+            s["seconds"] = round(s["seconds"] + e["seconds"], 1)
+        return {"requests": self.requests, "calls": len(self.entries), "retries": len(self.entries) - self.requests,
+                "seconds": round(sum(e["seconds"] for e in self.entries), 1), "by_step": by_step}
+
+
+_call_log: contextvars.ContextVar = contextvars.ContextVar("l3d_ai_call_log", default=None)
+
+
+@contextlib.contextmanager
+def logging_calls(log: CallLog):
+    """Record every ask_json attempt made inside this block to `log`."""
+    token = _call_log.set(log)
+    try:
+        yield log
+    finally:
+        _call_log.reset(token)
 
 
 NAMES = ("claude", "openai")
@@ -296,7 +345,12 @@ class ClaudeCLIProvider(Provider):
                 # Claude Code also uses a small model for web-search sub-steps: report the main one (most output).
                 usage = d.get("modelUsage") or {}
                 used = max(usage, key=lambda k: (usage[k] or {}).get("outputTokens", 0)) if usage else self.model
-                return AIResult(result, self.name, used, _urls(result))
+                tokens = d.get("usage") or {}
+                meta = {"turns": d.get("num_turns"), "cli_attempts": attempt + 1,
+                        "api_seconds": round((d.get("duration_api_ms") or 0) / 1000, 1),
+                        "input_tokens": tokens.get("input_tokens"), "output_tokens": tokens.get("output_tokens"),
+                        "cache_read_tokens": tokens.get("cache_read_input_tokens")}
+                return AIResult(result, self.name, used, _urls(result), meta)
         raise AIError("Claude Code: sign-in refresh kept failing")
 
 
@@ -478,15 +532,38 @@ def ask_json(provider: Provider, system: str, prompt: str, validator=None, web_s
     last_err = None
     last_ok = None
     p = prompt
-    for _ in range(retries + 1):
-        res = provider.chat(system, p, web_search=web_search, images=images)
+    log = _call_log.get()
+    step = sys._getframe(1).f_code.co_name                   # the pipeline step asking: massing, judge, facade_pass...
+    request = log.new_request() if log else 0
+
+    def note(attempt, outcome, started, res=None, check_started=None, errors=()):
+        if log:
+            now = time.perf_counter()
+            log.record({"step": step, "request": request, "attempt": attempt, "max_attempts": retries + 1,
+                        "outcome": outcome, "seconds": round((check_started or now) - started, 1),
+                        "check_seconds": round(now - check_started, 2) if check_started else 0,
+                        "provider": getattr(res, "provider", provider.name), "model": getattr(res, "model", None),
+                        "images": len(images or []), "prompt_chars": len(p),
+                        "reply_chars": len(res.text) if res else 0, "errors": [str(e)[:200] for e in list(errors)[:8]],
+                        **(getattr(res, "meta", None) or {})})
+
+    for attempt in range(1, retries + 2):
+        started = time.perf_counter()
+        try:
+            res = provider.chat(system, p, web_search=web_search, images=images)
+        except Exception as exc:
+            note(attempt, "error", started, errors=[exc])
+            raise
         try:
             obj = extract_json(res.text)
         except (AIError, json.JSONDecodeError) as exc:
             last_err = str(exc)
+            note(attempt, "invalid_json", started, res, errors=[exc])
             p = prompt + f"\n\nYour previous reply was not valid JSON ({last_err}). Reply with one JSON object only."
             continue
+        check_started = time.perf_counter()
         errs = validator(obj) if validator else []
+        note(attempt, "rejected" if errs else "ok", started, res, check_started, errs)
         if not errs:
             res.validation_errors = []
             return obj, res

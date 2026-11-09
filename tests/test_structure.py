@@ -542,5 +542,5 @@ def test_facade_pass_discarded_when_judge_score_drops(tmp_path, monkeypatch):
     monkeypatch.setattr(ai, "get", lambda task="research", name=None: Fake("m"))
     sp = pipeline.build_spec(prj)
     assert sp["parts"][0]["facade"]["opening_type"] == "arch"           # the worse facade pass was discarded
-    assert sp["quality"]["overall"] == 7 and len(calls) == 2
+    assert sp["quality"]["overall"] == 7 and len(calls) == 4            # a discarded round does not end the pass
     assert "discarded" in sp["photo_review"][-1]["result"]

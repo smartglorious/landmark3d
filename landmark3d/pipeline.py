@@ -239,11 +239,12 @@ def build_spec(prj: Project) -> dict:
                 quality = judge(prj, provider, massing, photos, sat_imgs, main, materials, st)
             if photos and settings_mod.load().get("facade_pass", True):
                 rounds_f = 1 + max(0, int(settings_mod.load().get("facade_review_rounds", 2) or 0))
+                rejected_notes = []
                 for fr in range(rounds_f):
                     q_ok = use_judge and (quality or {}).get("overall") is not None
                     refined, facade_log = facade_pass(
                         prj, provider, massing, photos, massing_check, st, main=main,
-                        feedback=(quality or {}).get("errors") if fr > 0 and q_ok else None,
+                        feedback=list((quality or {}).get("errors") or []) + rejected_notes if fr > 0 and q_ok else None,
                         sheets=[prj.root / i for i in (quality or {}).get("images", [])] if fr > 0 and q_ok else None)
                     facade_log["round"] = fr + 1
                     if refined is massing:
@@ -253,14 +254,22 @@ def build_spec(prj: Project) -> dict:
                         massing = refined
                         review_log.append(facade_log)
                         break
-                    # keep a facade round only if the independent judge scores it at least as well (overall, then
-                    # the facade aspect); otherwise stop and keep the previous facades
-                    q2 = judge(prj, provider, refined, photos, sat_imgs, main, materials, st)
-                    b_all, a_all = quality.get("overall"), (q2 or {}).get("overall")
-                    b_fac = (quality.get("scores") or {}).get("facade", 0)
-                    a_fac = ((q2 or {}).get("scores") or {}).get("facade", 0)
-                    better = a_all is not None and (a_all > b_all or (a_all == b_all and a_fac >= b_fac))
-                    if better:
+                    # A facade round is kept only if the independent judge scores it at least as well (overall, then
+                    # the facade aspect). If the whole round is worse, the parts that did improve can still be kept,
+                    # under the same test; a discarded round feeds the next one instead of ending the pass.
+                    q2 = judge(prj, provider, refined, photos, sat_imgs, main, materials, st, out_name=f"judge_f{fr + 1}")
+                    b_all, b_fac = quality.get("overall"), (quality.get("scores") or {}).get("facade", 0)
+                    a_all, a_fac = score_pair(q2)
+                    if not not_worse(quality, q2):
+                        mixed, kept = keep_better_parts(prj, provider, massing, refined, quality, q2, st)
+                        if mixed is not None:
+                            q3 = judge(prj, provider, mixed, photos, sat_imgs, main, materials, st,
+                                       out_name=f"judge_f{fr + 1}p")
+                            if not_worse(quality, q3):
+                                refined, q2, facade_log["parts_kept"] = mixed, q3, kept
+                                a_all, a_fac = score_pair(q3)
+                                facade_log["verdict"] = (facade_log.get("verdict") or "") + f" ({len(kept)} parts kept)"
+                    if not_worse(quality, q2):
                         massing, quality = refined, q2
                         facade_log["result"] = f"kept: judge {b_all} -> {a_all}, facade {b_fac} -> {a_fac}"
                         review_log.append(facade_log)
@@ -269,7 +278,9 @@ def build_spec(prj: Project) -> dict:
                                                 f"previous facades kept")
                         facade_log["verdict"] = (facade_log.get("verdict") or "") + " (discarded)"
                         review_log.append(facade_log)
-                        break
+                        rejected_notes = ["The last facade attempt scored lower, so it was not used: "
+                                          + str(e) for e in ((q2 or {}).get("errors") or [])[:3]]
+                        continue
                     if a_fac is not None and a_fac >= 4:
                         break
             ai_parts = massing["parts"]
@@ -762,6 +773,21 @@ def _opening_alias(rule: dict) -> dict:
     return dict(rule, opening_type=alias) if alias else rule
 
 
+def _alias_wall(fac: dict) -> None:
+    if isinstance(fac.get("ground"), dict):
+        fac["ground"] = _opening_alias(fac["ground"])
+    if isinstance(fac.get("floors"), list):
+        fac["floors"] = [_opening_alias(r) if isinstance(r, dict) else r for r in fac["floors"]]
+
+
+def _alias_side(side: dict) -> dict:
+    side = dict(_opening_alias(side))
+    _alias_wall(side)
+    if isinstance(side.get("segments"), list):
+        side["segments"] = [_alias_side(s) if isinstance(s, dict) else s for s in side["segments"]]
+    return side
+
+
 def sanitize_facades(massing: dict) -> dict:
     """Auto-correct facade values that only break the schema: opening words the engine has no geometry for become its
     nearest type (see OPENING_ALIASES), and on thin parts (a 0.6 m eave deck, a fountain basin) there are no openings
@@ -771,10 +797,9 @@ def sanitize_facades(massing: dict) -> dict:
         fac = p.get("facade")
         if isinstance(fac, dict):
             fac = dict(_opening_alias(fac))
-            if isinstance(fac.get("ground"), dict):
-                fac["ground"] = _opening_alias(fac["ground"])
-            if isinstance(fac.get("floors"), list):
-                fac["floors"] = [_opening_alias(r) if isinstance(r, dict) else r for r in fac["floors"]]
+            _alias_wall(fac)
+            if isinstance(fac.get("sides"), list):
+                fac["sides"] = [_alias_side(s) if isinstance(s, dict) else s for s in fac["sides"]]
             try:
                 lh = float(fac.get("level_height")) if fac.get("level_height") is not None else None
             except (TypeError, ValueError):
@@ -808,8 +833,9 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         prompt += ("\n\nREVIEW ROUND. The first attached images compare the photos (left) with the current model "
                    "(right) from the same viewpoints. An independent reviewer found these errors - fix the facade "
                    "ones; keep what already matches:\n- " + "\n- ".join(str(e) for e in feedback))
-    prompt += ("\n\nFacade logic (checked automatically - inconsistent answers are rejected): every facade gets ONE bay "
-               "grid (bay_spacing; the facade length is divided into whole bays, symmetric about its centre). Pilasters "
+    prompt += ("\n\nFacade logic (checked automatically - inconsistent answers are rejected): every facade, or every "
+               "segment of one, gets ONE bay "
+               "grid (bay_spacing; the length is divided into whole bays, symmetric about its centre). Pilasters "
                "stand on the bay lines; each window sits in the middle of a bay, so opening_width must be smaller than "
                "bay_spacing minus the pilaster width minus 0.3 m. A floor may use every 2nd or 3rd bay (bay_spacing = 2x "
                "or 3x the facade's), never a different rhythm. The entrance takes the central bay(s).")
@@ -843,12 +869,54 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
     return out, entry
 
 
-def judge(prj: Project, provider, massing: dict, photos: list, sat_imgs: list, main, base_materials: dict, st: dict):
-    """Independent AI score of the final model (it cannot edit anything): photo | render pairs from up to three
-    photo viewpoints plus satellite | top view. Stored in spec["quality"]; never blocks."""
+def score_pair(q) -> tuple:
+    """(overall, facade) of a judge result."""
+    return (q or {}).get("overall"), ((q or {}).get("scores") or {}).get("facade", 0)
+
+
+def not_worse(before, after) -> bool:
+    """The judge's test for keeping a change: overall higher, or equal with the facade score not lower."""
+    b_all, b_fac = score_pair(before)
+    a_all, a_fac = score_pair(after)
+    return a_all is not None and (a_all > b_all or (a_all == b_all and a_fac >= b_fac))
+
+
+def keep_better_parts(prj: Project, provider, massing: dict, refined: dict, before: dict, after: dict, st: dict):
+    """A facade round scored lower as a whole: ask, from before/after comparison sheets, which parts it improved.
+    Returns (model with only those parts changed, their ids), or (None, []) when no part qualifies."""
+    changed = [p["id"] for p, q in zip(massing["parts"], refined["parts"])
+               if (p.get("facade"), p.get("features")) != (q.get("facade"), q.get("features"))]
+    sheets = [prj.root / i for i in (before.get("images") or []) + (after.get("images") or [])]
+    if len(changed) < 2 or not sheets:
+        return None, []
+
+    def check(o):
+        if not isinstance(o.get("keep"), list) or not all(i in changed for i in o["keep"]):
+            return [f'"keep" must be a list of part ids from: {", ".join(changed)}']
+        return []
+    try:
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, agent.FACADE_PARTS_PROMPT.format(
+            name=st["name"], n=len(before.get("images") or []), parts=", ".join(changed)),
+            validator=check, images=sheets, retries=1)
+    except Exception as exc:
+        prj.log("facade part choice failed", {"error": str(exc)[:200]})
+        return None, []
+    kept = [i for i in changed if i in obj["keep"]]
+    if not kept or len(kept) == len(changed):
+        return None, []
+    new = {p["id"]: p for p in refined["parts"]}
+    parts = [new[p["id"]] if p["id"] in kept else p for p in massing["parts"]]
+    return sanitize_facades(prune_materials(dict(refined, parts=parts))), kept
+
+
+def judge(prj: Project, provider, massing: dict, photos: list, sat_imgs: list, main, base_materials: dict, st: dict,
+          out_name: str = "judge"):
+    """Independent AI score of a model (it cannot edit anything): photo | render pairs from up to three photo
+    viewpoints plus satellite | top view. The score is the mean of several independent readings, because one reading
+    moves by a point or more on the same model. Stored in spec["quality"]; never blocks."""
     from .engine import runner as engine_runner
     from .research import satellite
-    out_root = prj.root / "reports" / "judge"
+    out_root = prj.root / "reports" / out_name
     views, pairs = {}, []
     for v in (massing.get("views") or [])[:3]:
         try:
@@ -878,15 +946,21 @@ def judge(prj: Project, provider, massing: dict, photos: list, sat_imgs: list, m
         if not all(isinstance(sc.get(k), (int, float)) for k in REVIEW_ASPECTS):
             return ["scores for every aspect are required"]
         return [] if isinstance(o.get("overall"), (int, float)) else ["overall is required"]
-    try:
-        obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, agent.JUDGE_PROMPT.format(name=st["name"]),
-                               validator=check, images=sheets, retries=1)
-    except Exception as exc:
-        return {"result": f"judge failed: {exc}"[:300]}
-    q = {"scores": {k: obj["scores"][k] for k in REVIEW_ASPECTS}, "overall": obj["overall"],
-         "errors": [str(e)[:240] for e in obj.get("errors", [])[:3]], "model": res.model,
-         "images": [s.relative_to(prj.root).as_posix() for s in sheets]}
-    prj.log("quality judged", {"overall": q["overall"], "scores": q["scores"]})
+    readings, res = [], None
+    for _ in range(max(1, int(settings_mod.load().get("judge_samples", 3) or 1))):
+        try:
+            obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, agent.JUDGE_PROMPT.format(name=st["name"]),
+                                   validator=check, images=sheets, retries=1)
+            readings.append(obj)
+        except Exception as exc:
+            if not readings:
+                return {"result": f"judge failed: {exc}"[:300]}
+    mean = lambda vals: round(sum(vals) / len(vals), 2)
+    errors = list(dict.fromkeys(str(e)[:240] for r in readings for e in r.get("errors", [])))
+    q = {"scores": {k: mean([r["scores"][k] for r in readings]) for k in REVIEW_ASPECTS},
+         "overall": mean([r["overall"] for r in readings]), "readings": [r["overall"] for r in readings],
+         "errors": errors[:5], "model": res.model, "images": [s.relative_to(prj.root).as_posix() for s in sheets]}
+    prj.log("quality judged", {"overall": q["overall"], "readings": q["readings"], "scores": q["scores"]})
     return q
 
 
@@ -958,7 +1032,16 @@ def release(prj: Project) -> dict:
 
 # ----------------------------------------------------------------------------- runner
 def run_phase(prj: Project, phase: str) -> str:
-    """Execute one automatic phase. Returns the new status."""
+    """Execute one automatic phase, recording its AI calls in logs/ai_calls.jsonl. Returns the new status."""
+    calls = ai.CallLog(prj.path("logs", "ai_calls.jsonl"), phase)
+    with ai.logging_calls(calls):
+        status = _run_phase(prj, phase)
+    if calls.entries:
+        prj.log("ai usage", calls.summary())
+    return status
+
+
+def _run_phase(prj: Project, phase: str) -> str:
     prj.set_phase(phase, "running")
     try:
         if phase == "setup":

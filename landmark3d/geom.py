@@ -886,26 +886,68 @@ def facade_runs(poly, max_turn_deg: float = RUN_TURN_DEG):
     return runs
 
 
+SIDE_KEYS = ("opening_type", "bay_spacing", "opening_width", "opening_height", "sill", "pediment", "awning",
+             "awning_depth", "pilasters", "floors", "ground")     # what one wall or wall segment may set for itself
+
+
+def _slice_run(run, s0, s1):
+    """The part of an open facade run between two distances along it."""
+    edges, total = [], 0.0
+    for a, b, ln, e0 in run["edges"]:
+        lo, hi = max(s0, e0), min(s1, e0 + ln)
+        if hi - lo < 1e-6:
+            continue
+        d = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)
+        pa = (a[0] + d[0] * (lo - e0), a[1] + d[1] * (lo - e0))
+        pb = (a[0] + d[0] * (hi - e0), a[1] + d[1] * (hi - e0))
+        edges.append((pa, pb, hi - lo, total))
+        total += hi - lo
+    return {"edges": edges, "L": total, "closed": False}
+
+
+def _facade_pieces(poly, facade):
+    """Each wall with the facade it uses: facade["sides"] overrides the walls facing a direction, and a side's
+    "segments" ([{length, ...}] left to right seen from outside) give stretches of that wall their own bay grid."""
+    pieces = []
+    for run in facade_runs(poly):
+        _, _, o = _point_at(run["edges"], run["L"] / 2)
+
+        def dot(side):
+            f = math.radians(float(side.get("facing_deg", 0)))
+            return o[0] * math.cos(f) + o[1] * math.sin(f)
+        side = max([s for s in facade.get("sides") or [] if dot(s) > 0.75], key=dot, default=None)
+        if side is None:
+            pieces.append((run, facade))
+            continue
+        fac = {**facade, **{k: side[k] for k in SIDE_KEYS if k in side}}
+        segs = [s for s in side.get("segments") or [] if float(s.get("length", 0)) > 0]
+        if not segs or run["closed"]:
+            pieces.append((run, fac))
+            continue
+        scale = run["L"] / sum(float(s["length"]) for s in segs)
+        at = 0.0
+        for s in segs:
+            to = at + float(s["length"]) * scale
+            pieces.append((_slice_run(run, at, to), {**fac, **{k: s[k] for k in SIDE_KEYS if k in s}}))
+            at = to
+    return pieces
+
+
 def facade_layout(poly, base_z, top_z, facade):
-    """Where every punched-facade element goes. One bay grid per facade run, symmetric about the run's centre;
-    pilasters on bay boundaries, windows at bay centres (narrower than a bay minus a pilaster), the entrance in
-    the central bay(s), heights clear of string courses and the cornice. Returns elements plus any issues."""
+    """Where every punched-facade element goes. One bay grid per facade (or per segment of one), symmetric about its
+    centre; pilasters on bay boundaries, windows at bay centres (narrower than a bay minus a pilaster), the entrance
+    in the central bay(s), heights clear of string courses and the cornice. Returns elements plus any issues."""
     level_h = float(facade.get("level_height", 3.5))
-    bay = max(1.0, float(facade.get("bay_spacing", 4.0)))
+    base_bay = max(1.0, float(facade.get("bay_spacing", 4.0)))
     cor = float(facade.get("cornice", 0) or 0)
-    pl = facade.get("pilasters")
-    pl = (pl if isinstance(pl, dict) else {}) if pl else None
-    pil_w = float(pl.get("width", 0.7)) if pl else 0.0
-    pil_every = max(1, int(pl.get("every", 1))) if pl else 1
     bands = bool(facade.get("bands"))
     levels = max(1, int((top_z - base_z - cor + 0.3) // level_h))
-    rules = [dict(r) for r in (facade.get("floors") or [])]
-    if facade.get("ground") and not any(int(r.get("from", 0)) <= 0 <= int(r.get("to", r.get("from", 0))) for r in rules):
-        rules.append(dict(facade["ground"], **{"from": 0, "to": 0}))
-    out = {"runs": [], "windows": [], "pilasters": [], "entrance": None, "issues": [], "bay": bay}
-    runs = [r for r in facade_runs(poly) if r["L"] >= 0.7 * bay]
-    if not runs:
+    out = {"runs": [], "windows": [], "pilasters": [], "entrance": None, "issues": [], "bay": base_bay}
+    pieces = [(r, f) for r, f in _facade_pieces(poly, facade)
+              if r["L"] >= 0.7 * max(1.0, float(f.get("bay_spacing", 4.0)))]
+    if not pieces:
         return out
+    runs = [r for r, _ in pieces]
     ent = facade.get("entrance")
     ent_run = None
     if ent:
@@ -919,7 +961,15 @@ def facade_layout(poly, base_z, top_z, facade):
             ent_run = max(range(len(runs)), key=lambda k: facing_score(runs[k]))
         else:
             ent_run = max(range(len(runs)), key=lambda k: runs[k]["L"])
-    for ri, run in enumerate(runs):
+    for ri, (run, fac) in enumerate(pieces):
+        bay = max(1.0, float(fac.get("bay_spacing", 4.0)))
+        pl = fac.get("pilasters")
+        pl = (pl if isinstance(pl, dict) else {}) if pl else None
+        pil_w = float(pl.get("width", 0.7)) if pl else 0.0
+        pil_every = max(1, int(pl.get("every", 1))) if pl else 1
+        rules = [dict(r) for r in (fac.get("floors") or [])]
+        if fac.get("ground") and not any(int(r.get("from", 0)) <= 0 <= int(r.get("to", r.get("from", 0))) for r in rules):
+            rules.append(dict(fac["ground"], **{"from": 0, "to": 0}))
         n = max(1, int(round(run["L"] / bay)))
         b = run["L"] / n
         out["runs"].append({"L": run["L"], "n": n, "b": b})
@@ -959,11 +1009,11 @@ def facade_layout(poly, base_z, top_z, facade):
         clear = b - pil_w - 2 * PILASTER_GAP
         for lv in range(levels):
             rule = next((r for r in rules if int(r.get("from", 0)) <= lv <= int(r.get("to", r.get("from", 0)))), None)
-            kind = (rule or {}).get("opening_type") or facade.get("opening_type", "rect")
+            kind = (rule or {}).get("opening_type") or fac.get("opening_type", "rect")
             if kind == "none":
                 continue
-            src = rule if rule and rule.get("opening_type") else facade
-            every = max(1, int(round(float(src.get("bay_spacing", bay)) / bay))) if src.get("bay_spacing") else 1
+            src = rule if rule and rule.get("opening_type") else fac
+            every =max(1, int(round(float(src.get("bay_spacing", bay)) / bay))) if src.get("bay_spacing") else 1
             if kind == "storefront":
                 w = float(src.get("opening_width", b * 0.8))
                 h = float(src.get("opening_height", level_h * 0.8))
@@ -1003,6 +1053,14 @@ def facade_layout(poly, base_z, top_z, facade):
                                        "p": p_, "t": t_, "o": o_, "pediment": pediment, "awning": awning,
                                        "awning_depth": float(src.get("awning_depth", 1.0)),
                                        "frame_half": min(w / 2 + 0.25, (b - pil_w) / 2 - 0.05)})
+    seen = set()                                       # two segments meeting at a line share its pilaster
+    unique = []
+    for p_ in out["pilasters"]:
+        key = (round(p_["pt"][0][0], 2), round(p_["pt"][0][1], 2))
+        if key not in seen:
+            seen.add(key)
+            unique.append(p_)
+    out["pilasters"] = unique
     return out
 
 
@@ -1152,8 +1210,13 @@ def facade_detail(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, tap
     level_h = float(facade.get("level_height", 3.5))
     cor = float(facade.get("cornice", 0) or 0)
     if cor > 0:
-        used += band(ring_at(poly, base_z, top_z, taper, top_z), top_z - cor, top_z, min(0.6, 0.25 + cor * 0.25),
-                     mesh, "trim")
+        ring = ring_at(poly, base_z, top_z, taper, top_z)
+        tiers = max(1, min(4, int(facade.get("cornice_tiers", 1) or 1)))
+        out = min(0.6, 0.25 + cor * 0.25)
+        for i in range(tiers):                         # a stepped moulding: each tier projects further than the last
+            z0 = top_z - cor + cor * i / tiers
+            used += band(ring, z0, top_z - cor + cor * (i + 1) / tiers, out * (0.45 + 0.55 * (i + 1) / tiers) if tiers > 1 else out,
+                         mesh, "trim")
     if facade.get("pilasters") and facade.get("opening_type") != "curtain_wall" and not is_tapered(taper):
         used += pilasters(poly, base_z, top_z - cor, facade, mesh, max(0, budget_left - used))
     if facade.get("bands") and facade.get("opening_type") != "curtain_wall":
@@ -1268,19 +1331,256 @@ def _box(mesh, center, t, o, w, h, depth, z_mid, tag, shape=None):
     return (k - 2) + 2 * k
 
 
+def _solid(mesh, at, x0, x1, y0, y1, z0, z1, tag, bottom=True) -> int:
+    """A box in a facade's frame: at(x, y, z) maps x along the facade and y out of the wall to world coordinates."""
+    P = lambda x, y, z: mesh.v(*at(x, y, z))
+    quads = [(P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1)),      # front
+             (P(x1, y1, z0), P(x1, y0, z0), P(x1, y0, z1), P(x1, y1, z1)),
+             (P(x0, y0, z0), P(x0, y1, z0), P(x0, y1, z1), P(x0, y0, z1)),
+             (P(x1, y0, z0), P(x0, y0, z0), P(x0, y0, z1), P(x1, y0, z1)),      # back
+             (P(x0, y0, z1), P(x0, y1, z1), P(x1, y1, z1), P(x1, y0, z1))]      # top
+    if bottom:
+        quads.append((P(x0, y0, z0), P(x1, y0, z0), P(x1, y1, z0), P(x0, y1, z0)))
+    for q in quads:
+        mesh.f(q, tag)
+    return 2 * len(quads)
+
+
+def _shaft(mesh, cx, cy, r0, r1, z0, z1, tag, n=10) -> int:
+    """A round shaft, slightly tapered from r0 to r1, with a top cap (a point when r1 is 0)."""
+    low = [(cx + r0 * math.cos(2 * math.pi * i / n), cy + r0 * math.sin(2 * math.pi * i / n)) for i in range(n)]
+    if r1 <= 1e-3:
+        for i in range(n):
+            mesh.f((mesh.v(*low[i], z0), mesh.v(*low[(i + 1) % n], z0), mesh.v(cx, cy, z1)), tag)
+        return n
+    top = [(cx + r1 * math.cos(2 * math.pi * i / n), cy + r1 * math.sin(2 * math.pi * i / n)) for i in range(n)]
+    for i in range(n):
+        j = (i + 1) % n
+        mesh.f((mesh.v(*low[i], z0), mesh.v(*low[j], z0), mesh.v(*top[j], z1), mesh.v(*top[i], z1)), tag)
+    mesh.f([mesh.v(*p, z1) for p in top], tag)
+    return 2 * n + n - 2
+
+
+def _on_facade(poly, base_z, top_z, taper, ft, z, half):
+    """Where a facade feature goes: (at, x_centre_range_half) on the wall facing ft["facing_deg"], clamped to it."""
+    face = _face_for(ring_at(poly, base_z, top_z, taper, z), ft.get("facing_deg", 270))
+    if face is None:
+        return None
+    a, _, ln, t, o = face
+    half = min(half, ln / 2 - 0.05)
+    if half <= 0.05:
+        return None
+    off = max(-(ln / 2 - half), min(ln / 2 - half, float(ft.get("offset", 0.0))))
+    cx, cy = a[0] + t[0] * (ln / 2 + off), a[1] + t[1] * (ln / 2 + off)
+    return (lambda x, y, zz: (cx + t[0] * x + o[0] * y, cy + t[1] * x + o[1] * y, zz)), half
+
+
+def _railing(mesh, at, x0, x1, y, z, h, spacing, post, tag, budget) -> int:
+    """Top rail, bottom rail and evenly spaced posts along one straight run (a balustrade or iron cresting)."""
+    used = _solid(mesh, at, x0, x1, y - post, y + post, z + h - 2 * post, z + h, tag)
+    used += _solid(mesh, at, x0, x1, y - post, y + post, z, z + 2 * post, tag, bottom=False)
+    n = max(1, int(round((x1 - x0) / max(0.15, spacing))))
+    for i in range(n + 1):
+        if used + 8 > budget:
+            break
+        x = x0 + (x1 - x0) * i / n
+        used += _solid(mesh, at, x - post, x + post, y - post, y + post, z + 2 * post, z + h - 2 * post, tag, bottom=False)
+    return used
+
+
+def _column(mesh, at, x, y, z, height, d, tag) -> int:
+    """A round column with a square base and capital; `y` is its axis, out from the wall."""
+    plinth, cap = min(0.4, height * 0.08), min(0.35, height * 0.07)
+    used = _solid(mesh, at, x - 0.7 * d, x + 0.7 * d, y - 0.7 * d, y + 0.7 * d, z, z + plinth, tag, bottom=False)
+    cx, cy, _ = at(x, y, 0)
+    used += _shaft(mesh, cx, cy, d / 2, d * 0.43, z + plinth, z + height - cap, tag)
+    return used + _solid(mesh, at, x - 0.65 * d, x + 0.65 * d, y - 0.65 * d, y + 0.65 * d, z + height - cap, z + height, tag)
+
+
+def _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget, tag) -> int:
+    """Architectural details with real depth. z is the BOTTOM of the feature above the part's base."""
+    z = base_z + float(ft.get("z", 0.0))
+    if kind == "column":
+        d = max(0.1, float(ft.get("diameter", 0.8)))
+        h = max(0.5, float(ft.get("height", top_z - z)))
+        count = max(1, int(ft.get("count", 1)))
+        gap = max(0.0, float(ft.get("pair_gap", 0.0)))
+        spacing = max(d * 1.5, float(ft.get("spacing", 3.0))) if count > 1 else 0.0
+        place = _on_facade(poly, base_z, top_z, taper, ft, z + h / 2, (count - 1) * spacing / 2 + gap / 2 + d)
+        if place is None:
+            return 0
+        at, half = place
+        y = float(ft.get("projection", d / 2 + 0.15))
+        used = 0
+        for i in range(count):
+            x = (i - (count - 1) / 2) * spacing
+            for xx in ((x - gap / 2, x + gap / 2) if gap else (x,)):
+                if abs(xx) <= half and used + 48 <= budget:
+                    used += _column(mesh, at, xx, y, z, h, d, tag)
+        return used
+    if kind in ("balustrade", "cresting"):
+        h = max(0.2, float(ft.get("height", 1.0 if kind == "balustrade" else 0.8)))
+        spacing = float(ft.get("spacing", 0.55 if kind == "balustrade" else 0.5))
+        post = 0.07 if kind == "balustrade" else 0.03
+        if kind == "cresting" or ft.get("around"):
+            z = base_z + float(ft["z"]) if ft.get("z") is not None else top_z
+            ring = ensure_ccw(ring_at(poly, base_z, top_z, taper, z))
+            used = 0
+            for i, a in enumerate(ring):
+                b = ring[(i + 1) % len(ring)]
+                ln = math.dist(a, b)
+                if ln < 0.2 or used >= budget:
+                    continue
+                t, o = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln), ((b[1] - a[1]) / ln, -(b[0] - a[0]) / ln)
+                at = lambda x, y, zz, a=a, t=t, o=o: (a[0] + t[0] * x + o[0] * y, a[1] + t[1] * x + o[1] * y, zz)
+                used += _railing(mesh, at, 0.0, ln, float(ft.get("projection", post)), z, h, spacing, post, tag, budget - used)
+            return used
+        place = _on_facade(poly, base_z, top_z, taper, ft, z, float(ft.get("width", 6.0)) / 2)
+        if place is None:
+            return 0
+        at, half = place
+        return _railing(mesh, at, -half, half, float(ft.get("projection", 0.2)), z, h, spacing, post, tag, budget)
+    if kind == "balcony":
+        depth, thick = max(0.2, float(ft.get("depth", 1.2))), max(0.08, float(ft.get("thickness", 0.25)))
+        rail_h = float(ft.get("rail_height", 1.0))
+        place = _on_facade(poly, base_z, top_z, taper, ft, z, float(ft.get("width", 4.0)) / 2)
+        if place is None:
+            return 0
+        at, half = place
+        used = _solid(mesh, at, -half, half, 0.02, depth, z - thick, z, tag)
+        if rail_h <= 0:
+            return used
+        used += _railing(mesh, at, -half, half, depth - 0.07, z, rail_h, 0.3, 0.05, tag, budget - used)
+        for x in (-half + 0.05, half - 0.05):
+            side = lambda u, v, zz, x=x: at(x - v, u, zz)   # u runs out from the wall
+            used += _railing(mesh, side, 0.05, depth - 0.07, 0.0, z, rail_h, 0.3, 0.05, tag, budget - used)
+        return used
+    if kind == "colonnade":
+        h = max(1.0, float(ft.get("height", 5.0)))
+        depth = max(0.3, float(ft.get("depth", 1.5)))
+        beam = max(0.15, float(ft.get("beam_height", min(0.8, h * 0.14))))
+        d = max(0.12, float(ft.get("column_diameter", 0.7)))
+        bays = max(1, int(ft.get("bays", 3)))
+        gap = max(0.0, float(ft.get("pair_gap", 0.0)))
+        place = _on_facade(poly, base_z, top_z, taper, ft, z + h / 2, float(ft.get("width", 9.0)) / 2)
+        if place is None:
+            return 0
+        at, half = place
+        mesh.f([mesh.v(*at(x, 0.06, zz)) for x, zz in ((-half, z), (half, z), (half, z + h), (-half, z + h))], "d:opening")
+        used = 2
+        used += _solid(mesh, at, -half, half, 0.02, depth + d * 0.6, z + h - beam, z + h, tag)
+        floor = z - 0.2 if z >= 0.2 else z                  # on the ground the floor sits on it, not below it
+        used += _solid(mesh, at, -half, half, 0.02, depth + d * 0.6, floor, floor + 0.2, tag)
+        for side in (-half + 0.12, half - 0.12):
+            used += _solid(mesh, at, side - 0.12, side + 0.12, 0.02, depth + d * 0.3, z, z + h - beam, tag, bottom=False)
+        step = (2 * half - d) / bays
+        for i in range(bays + 1):
+            x = -half + d / 2 + i * step
+            for xx in ((x - gap / 2, x + gap / 2) if gap else (x,)):
+                if used + 48 <= budget:
+                    used += _column(mesh, at, xx, depth, z, h - beam, d, tag)
+        return used
+    if kind == "pediment":
+        w, h = max(0.5, float(ft.get("width", 6.0))), max(0.2, float(ft.get("height", 1.8)))
+        place = _on_facade(poly, base_z, top_z, taper, ft, z + h / 2, w / 2)
+        if place is None:
+            return 0
+        at, half = place
+        cx, cy, _ = at(0, 0, 0)
+        ex, ey, _ = at(1, 0, 0)
+        ox, oy, _ = at(0, 1, 0)
+        t, o = (ex - cx, ey - cy), (ox - cx, oy - cy)
+        depth, style = max(0.1, float(ft.get("depth", 0.4))), ft.get("style", "triangle")
+        shapes = []
+        if style == "segmental":
+            shapes = [[(half * math.cos(math.pi * i / 12), h * math.sin(math.pi * i / 12)) for i in range(13)]]
+        elif style == "broken":
+            g = min(0.8 * half, max(0.2, float(ft.get("gap", half * 0.6)) / 2))
+            top = h * (1 - g / half)
+            shapes = [[(-half, 0.0), (-g, 0.0), (-g, top)], [(g, 0.0), (half, 0.0), (g, top)]]
+        else:
+            shapes = [[(-half, 0.0), (half, 0.0), (0.0, h)]]
+        used = 0
+        for shape in shapes:
+            used += _box(mesh, (cx, cy), t, o, 0, 0, depth, z, tag, shape)
+        return used + _solid(mesh, at, -half - 0.1, half + 0.1, 0.02, depth + 0.1, z - 0.25, z, tag)
+    if kind == "finial":
+        x, y = float(ft.get("x", centroid(poly)[0])), float(ft.get("y", centroid(poly)[1]))
+        z = base_z + float(ft["z"]) if ft.get("z") is not None else top_z
+        h, r = max(0.2, float(ft.get("height", 2.0))), max(0.03, float(ft.get("radius", 0.25)))
+        if ft.get("style") == "ball":
+            used = _shaft(mesh, x, y, r * 0.45, r * 0.4, z, z + h * 0.55, tag, 8)
+            used += _shaft(mesh, x, y, r * 0.5, r, z + h * 0.55, z + h * 0.72, tag, 8)
+            return used + _shaft(mesh, x, y, r, 0.0, z + h * 0.72, z + h, tag, 8)
+        return _shaft(mesh, x, y, r, 0.0, z, z + h, tag, 8)
+    return 0
+
+
+def _clip_to_uncovered(mesh, face, a, b, z0, z1, ln):
+    """What remains of a generated facade face where a photo covers wall a-b from z0 to z1: `face` when it does not
+    touch the photo, nothing when it lies on it, and the parts above and below when a straight strip runs past it."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    for vi in face:
+        x, y, _ = mesh.verts[vi]
+        t_ = ((x - a[0]) * dx + (y - a[1]) * dy) / (ln * ln)
+        off = ((x - a[0]) * dy - (y - a[1]) * dx) / ln                  # + = outside (CCW ring)
+        if not (-0.02 <= t_ <= 1.02 and -0.05 <= off <= 1.2):
+            return [face]
+    zs = sorted({round(mesh.verts[vi][2], 4) for vi in face})
+    lo, hi = zs[0], zs[-1]
+    if hi <= z0 + 0.05 or lo >= z1 - 0.05:
+        return [face]
+    if lo >= z0 - 0.05 and hi <= z1 + 0.05 or len(face) != 4 or len(zs) != 2:
+        return []                                       # on the photo, or a shape that cannot be cut (an arch)
+    out = []
+    for new_lo, new_hi in ((lo, z0), (z1, hi)):
+        if new_hi - new_lo > 0.05:
+            out.append(tuple(mesh.v(mesh.verts[vi][0], mesh.verts[vi][1],
+                                    new_lo if abs(mesh.verts[vi][2] - lo) < 1e-3 else new_hi) for vi in face))
+    return out
+
+
+def clear_covered_faces(mesh, covered) -> None:
+    """Where a real photo shows a wall, remove the detail generated on it, so it cannot lie over or stick out from the
+    photo. `covered` is [(a, b, z0, z1)]. Details with real depth ("d:" tags) stand in front of the photo and stay."""
+    faces, tags = [], []
+    for face, tag in zip(mesh.faces, mesh.tags):
+        pieces = [face]
+        if tag not in ("wall", "roof") and not tag.startswith("d:"):
+            for a, b, z0, z1 in covered:
+                ln = math.dist(a, b) or 1.0
+                pieces = [q for p in pieces for q in _clip_to_uncovered(mesh, p, a, b, z0, z1, ln)]
+        faces += pieces
+        tags += [tag] * len(pieces)
+    mesh.faces, mesh.tags = faces, tags
+
+
+DEPTH_FEATURES = ("column", "balustrade", "balcony", "colonnade", "pediment", "finial", "cresting")
+
+
 def features(poly, base_z, top_z, taper, feats, mesh, budget_left: int = 10 ** 9) -> int:
     """Generic detail primitives on a part (all positions relative to the part):
       disc  {facing_deg, z, diameter, offset?, depth?, material}   clock faces, rose / round windows
-      panel {facing_deg, z, width, height, offset?, depth?, material}   signs, friezes, reliefs, balconies
+      panel {facing_deg, z, width, height, offset?, depth?, material}   signs, friezes, flat reliefs
       mast  {x, y, height, radius?, material}   flagpoles, antennas, crosses (stands on the part's top)
-    z = height of the centre above the part's base; offset = metres along the facade from its middle."""
+    For disc and panel z = height of the centre above the part's base. Details with real depth (z = their bottom):
+      column     {facing_deg, z, height, diameter, offset?, count?, spacing?, pair_gap?, projection?}
+      balustrade {facing_deg, z, width, height?, offset?, spacing?} or {around: true, z?} around the whole part
+      balcony    {facing_deg, z, width, depth?, offset?, thickness?, rail_height?}
+      colonnade  {facing_deg, z, width, height, depth?, bays?, column_diameter?, pair_gap?, offset?}   a loggia
+      pediment   {facing_deg, z, width, height, depth?, style?: triangle|segmental|broken, gap?, offset?}
+      finial     {x?, y?, z?, height?, radius?, style?: spike|ball}     cresting {z?, height?, spacing?}   iron on a roof
+    offset = metres along the facade from its middle."""
     used = 0
     for ft in feats or []:
         if used >= budget_left:
             break
         kind = ft.get("type")
         tag = "m:" + str(ft.get("material", "trim"))
-        if kind in ("disc", "panel"):
+        if kind in DEPTH_FEATURES:
+            used += _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget_left - used,
+                                "d:" + str(ft.get("material", "trim")))
+        elif kind in ("disc", "panel"):
             z = base_z + float(ft.get("z", (top_z - base_z) / 2))
             ring = ring_at(poly, base_z, top_z, taper, z)
             face = _face_for(ring, ft.get("facing_deg", 270))

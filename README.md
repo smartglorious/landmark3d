@@ -67,6 +67,10 @@ A change request returns to the phase that owns the problem (A1 → research, A2
 
 Product and publisher details on the **Giới thiệu** page come from `landmark3d/web/about.json`.
 
+**Facade detail:** besides punched openings, a part's `features` can hold details with real depth (`column`, `colonnade`, `balcony`, `balustrade`, `pediment`, `finial`, `cresting`), and `facade.sides` / `segments` give a wall or a stretch of wall its own bays. Each judge score is the mean of `judge_samples` readings (default 3). A facade round that scores lower is not used as a whole, but the parts it improved can be kept if the result passes the same test.
+
+**AI call log:** each project's `logs/ai_calls.jsonl` has one line per AI attempt: step, attempt number, outcome (`ok`, `rejected`, `invalid_json`, `error`), seconds, rejection reasons, and for Claude Code the turns and tokens. Prompts and replies are not stored. Each phase adds an `ai usage` summary to the project log.
+
 ## Licences
 
 Web images are used as reference and, when the licence allows (public domain, CC BY, CC BY-SA, or permission you record), as textures. Unknown licences stay reference-only. Attributions go into the release notes.

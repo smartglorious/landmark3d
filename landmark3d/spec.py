@@ -27,6 +27,24 @@ FLOOR_RULE = {
         "pediment": {"type": "boolean"}, "awning": {"type": "boolean"}, "awning_depth": {"type": "number"}},
 }
 
+_PILASTERS = {"oneOf": [{"type": "boolean"}, {"type": "object", "properties": {
+    "every": {"type": "integer", "minimum": 1}, "width": {"type": "number", "exclusiveMinimum": 0},
+    "depth": {"type": "number", "exclusiveMinimum": 0}}}]}
+_GROUND = {"type": "object", "properties": {
+    "opening_type": {"enum": ["storefront", "rect", "arch"]},
+    "bay_spacing": {"type": "number", "exclusiveMinimum": 1},
+    "opening_width": {"type": "number"}, "opening_height": {"type": "number"},
+    "awning": {"type": "boolean"}, "awning_depth": {"type": "number", "minimum": 0.2, "maximum": 3}}}
+_WALL_FACADE = {     # what one wall (facade "sides") or stretch of wall ("segments") may set for itself
+    "opening_type": {"enum": OPENING_TYPES}, "bay_spacing": {"type": "number", "exclusiveMinimum": 0.5},
+    "opening_width": {"type": "number"}, "opening_height": {"type": "number"}, "sill": {"type": "number", "minimum": 0},
+    "pediment": {"type": "boolean"}, "awning": {"type": "boolean"}, "pilasters": _PILASTERS,
+    "floors": {"type": "array", "items": FLOOR_RULE}, "ground": _GROUND}
+_FACADE_SIDE = {"type": "object", "required": ["facing_deg"], "properties": {
+    **_WALL_FACADE, "facing_deg": {"type": "number"},
+    "segments": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["length"], "properties": {
+        **_WALL_FACADE, "length": {"type": "number", "exclusiveMinimum": 0}}}}}}
+
 PART_SCHEMA = {
     "type": "object",
     "required": ["id", "footprint", "base_z", "height", "roof"],
@@ -67,9 +85,22 @@ PART_SCHEMA = {
                     "gap": {"type": "number", "minimum": 0, "maximum": 15},
                     "overhang": {"type": "number", "minimum": 0, "maximum": 4}}}}}},
         "cantilever_of": {"type": "string"},
-        "features": {"type": "array", "maxItems": 40, "items": {
+        "features": {"type": "array", "maxItems": 120, "items": {
             "type": "object", "required": ["type"],
-            "properties": {"type": {"enum": ["disc", "panel", "mast"]}, "facing_deg": {"type": "number"},
+            "properties": {"type": {"enum": ["disc", "panel", "mast", "column", "balustrade", "balcony", "colonnade",
+                                             "pediment", "finial", "cresting"]},
+                           "count": {"type": "integer", "minimum": 1, "maximum": 80},
+                           "spacing": {"type": "number", "exclusiveMinimum": 0},
+                           "pair_gap": {"type": "number", "minimum": 0, "maximum": 4},
+                           "projection": {"type": "number", "minimum": 0, "maximum": 6},
+                           "bays": {"type": "integer", "minimum": 1, "maximum": 30},
+                           "column_diameter": {"type": "number", "exclusiveMinimum": 0, "maximum": 4},
+                           "beam_height": {"type": "number", "exclusiveMinimum": 0, "maximum": 4},
+                           "thickness": {"type": "number", "exclusiveMinimum": 0, "maximum": 2},
+                           "rail_height": {"type": "number", "minimum": 0, "maximum": 3},
+                           "gap": {"type": "number", "minimum": 0}, "around": {"type": "boolean"},
+                           "style": {"enum": ["triangle", "segmental", "broken", "spike", "ball"]},
+                           "facing_deg": {"type": "number"},
                            "z": {"type": "number"}, "offset": {"type": "number"},
                            "diameter": {"type": "number", "exclusiveMinimum": 0, "maximum": 40},
                            "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 200},
@@ -87,6 +118,8 @@ PART_SCHEMA = {
             "opening_type": {"enum": OPENING_TYPES + ["curtain_wall"]}, "opening_width": {"type": "number"},
             "sill": {"type": "number", "minimum": 0}, "pediment": {"type": "boolean"}, "awning": {"type": "boolean"},
             "floors": {"type": "array", "items": FLOOR_RULE},
+            "sides": {"type": "array", "maxItems": 8, "items": _FACADE_SIDE},
+            "cornice_tiers": {"type": "integer", "minimum": 1, "maximum": 4},
             "entrance": {"type": "object", "properties": {
                 "width": {"type": "number", "exclusiveMinimum": 1}, "height": {"type": "number", "exclusiveMinimum": 1.5},
                 "facing_deg": {"type": "number"}}},

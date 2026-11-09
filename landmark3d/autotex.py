@@ -358,6 +358,7 @@ def part_faces(spec: dict, part: dict) -> list[dict]:
         nx, ny = (b[1] - a[1]) / ln, -(b[0] - a[0]) / ln
         out.append({"face": f"{part['id']}#{i}", "part": part["id"], "edge_index": i,
                     "facing_deg": round(math.degrees(math.atan2(ny, nx)) % 360), "length_m": round(ln, 2),
+                    "level_height": float(fac.get("level_height") or 0),
                     "n_bays": max(1, int(round(ln / bay))), "z0": float(part["base_z"]),
                     "z1": float(part["base_z"]) + float(part["height"])})
     return out
@@ -405,6 +406,26 @@ def harmonise(images: list) -> list:
         a = np.asarray(im.convert("RGB"), dtype=np.float32) * g
         out.append(Image.fromarray(a.clip(0, 255).astype(np.uint8)))
     return out
+
+
+def match_wall_colour(img: Image.Image, srgb) -> Image.Image:
+    """Colour-correct a facade photo so its plaster matches the wall material (a rainy or shaded photo reads far darker
+    than the walls around it). The plaster is taken from the brightest 40% of the image, since windows are dark."""
+    if not srgb:
+        return img
+    a = np.asarray(img.convert("RGB"), dtype=np.float32)
+    lum = a @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    plaster = a[lum >= np.percentile(lum, 60)]
+    if plaster.size == 0:
+        return img
+    gain = np.clip(np.asarray(srgb[:3], dtype=np.float32) / np.maximum(np.median(plaster, axis=0), 1.0), 0.8, 2.4)
+    return Image.fromarray((a * gain).clip(0, 255).astype(np.uint8))
+
+
+def wall_colour(spec: dict, part_id: str):
+    part = next((p for p in spec.get("parts", []) if p.get("id") == part_id), {})
+    mats = spec.get("materials") or {}
+    return (mats.get((part.get("material") or {}).get("wall", "wall")) or mats.get("wall") or {}).get("srgb")
 
 
 PROMPT_V2 = """Landmark: {name}. We texture a 3D model with crops of the attached photos (photo 1 .. photo {n}; each has
@@ -588,7 +609,7 @@ def qa_v2(prj: Project, provider, items: list) -> list:
             it["img"] = mirror_repair(it["img"], v["occluded"])
         band = clean_band(v.get("clean_rows"))
         if band is not None:
-            it["img"], it["face"] = crop_band(it["img"], it["face"], band)
+            it["img"], it["face"] = crop_band(it["img"], it["face"], snap_band(band, it["face"]))
         kept.append(it)
     return kept
 
@@ -606,6 +627,25 @@ def clean_band(rows):
     if b - t < MIN_BAND or (t <= 0.02 and b >= 0.98):
         return None
     return t, b
+
+
+def snap_band(band, face):
+    """Shrink a clean band to whole floors, so its edges follow the floor lines instead of cutting through windows.
+    The band is left as it is when too little of it would remain."""
+    level = float(face.get("level_height") or 0)
+    z0, z1 = float(face["z0"]), float(face["z1"])
+    height = z1 - z0
+    if level <= 0 or height <= 0:
+        return band
+    t, b = band
+    bottom, top = z1 - b * height, z1 - t * height
+    if b < 0.98:
+        bottom = min(z1, z0 + math.ceil((bottom - z0 - 0.15) / level) * level)
+    if t > 0.02:
+        top = max(z0, z0 + math.floor((top - z0 + 0.15) / level) * level)
+    if top - bottom < max(2.0, MIN_BAND * height):
+        return band
+    return (z1 - top) / height, (z1 - bottom) / height
 
 
 def crop_band(img, face, band):
@@ -626,7 +666,8 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
     tex_dir.mkdir(parents=True, exist_ok=True)
     for old in tex_dir.glob("auto_*.jpg"):
         old.unlink()
-    imgs = harmonise([it["img"] for it in items])
+    imgs = [match_wall_colour(im, wall_colour(spec, it["face"]["part"]))
+            for it, im in zip(items, harmonise([it["img"] for it in items]))]
     entries, rejected = [], []
     for k, (it, img) in enumerate(zip(items, imgs), start=1):
         f, src = it["face"], it["src"]
@@ -671,7 +712,7 @@ def run_v2(prj: Project, provider) -> dict:
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = spec_hash(spec) + "-v2"
+    h = spec_hash(spec) + "-v3"
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
     obj, photos, ctx = plan_v2(prj, provider, spec)

@@ -441,8 +441,11 @@ def main():
                                     share // 2, part.get("taper"))
         openings_total += geom.facade_openings(poly, part["base_z"], part["base_z"] + part["height"],
                                                part.get("facade"), gm, max(0, share - detail), part.get("taper"))
-        geom.features(poly, part["base_z"], part["base_z"] + part["height"], part.get("taper"), part.get("features"),
-                      gm, max(0, share))
+    # Details share what is left of the whole budget: a small part such as a tower is often the most ornate one.
+    feature_left = max(0, tri_budget - sum(g.triangles() for _, _, g in meshes))
+    for part, poly, gm in meshes:
+        feature_left -= geom.features(poly, part["base_z"], part["base_z"] + part["height"], part.get("taper"),
+                                      part.get("features"), gm, max(0, feature_left))
         pm = part.get("material", {})
         tag_mat = {"wall": pm.get("wall", "wall"), "roof": pm.get("roof", "roof"), "trim": pm.get("trim", "trim"),
                    "opening": "opening", "accent": pm.get("accent", pm.get("trim", "trim"))}
@@ -455,30 +458,12 @@ def main():
         if covered:                                   # a real photo shows this face: drop the generated detail on it
             ring = geom.ensure_ccw(poly)
             z_lo, z_hi = part["base_z"], part["base_z"] + part["height"]
-            segs = [(ring[int(pn["edge_index"]) % len(ring)], ring[(int(pn["edge_index"]) + 1) % len(ring)],
-                     pn["z0"] if pn.get("z0") is not None else z_lo, pn["z1"] if pn.get("z1") is not None else z_hi)
-                    for pn in covered]
-
-            def on_covered_face(face):
-                for a_, b_, pz0, pz1 in segs:
-                    dx, dy = b_[0] - a_[0], b_[1] - a_[1]
-                    ln = math.hypot(dx, dy) or 1.0
-                    ok = True
-                    for vi in face:
-                        x, y, _ = gm.verts[vi]
-                        t_ = ((x - a_[0]) * dx + (y - a_[1]) * dy) / (ln * ln)
-                        off = ((x - a_[0]) * dy - (y - a_[1]) * dx) / ln          # + = outside (CCW ring)
-                        z_ = gm.verts[vi][2]
-                        if not (-0.02 <= t_ <= 1.02 and -0.05 <= off <= 1.2 and pz0 - 0.05 <= z_ <= pz1 + 0.05):
-                            ok = False
-                            break
-                    if ok:
-                        return True
-                return False
-            keep = [(f, t) for f, t in zip(gm.faces, gm.tags) if t in ("wall", "roof") or not on_covered_face(f)]
-            gm.faces, gm.tags = [f for f, _ in keep], [t for _, t in keep]
-        for t in set(gm.tags):                        # feature tags name their material directly ("m:<name>")
-            if t.startswith("m:"):
+            geom.clear_covered_faces(gm, [(ring[int(pn["edge_index"]) % len(ring)],
+                                           ring[(int(pn["edge_index"]) + 1) % len(ring)],
+                                           pn["z0"] if pn.get("z0") is not None else z_lo,
+                                           pn["z1"] if pn.get("z1") is not None else z_hi) for pn in covered])
+        for t in set(gm.tags):                        # feature tags name their material directly ("m:" or "d:" + name)
+            if t.startswith(("m:", "d:")):
                 tag_mat[t] = t[2:] if t[2:] in mats else tag_mat["trim"]
                 if t[2:] not in mats:
                     warnings.append(f"part {part['id']}: feature material '{t[2:]}' unknown, used trim")

@@ -179,23 +179,50 @@ so the model reads like the photos up close. For every part, return its complete
   {{"type": "panel", "facing_deg", "z", "width", "height", "offset", "depth", "material"}}   name signs, friezes,
       reliefs, balcony slabs, canopies over entrances (depth up to 3 m)
   {{"type": "mast", "x", "y", "height", "radius", "material"}}   flagpoles, antennas, crosses on top of the part
-  Only details clearly visible in the photos; at most 12 per part.
+  Details with real depth; use these rather than flat panels wherever the photos show them. Here z = the BOTTOM of the
+  detail above the part's base:
+  {{"type": "column", "facing_deg", "z", "height", "diameter", "offset", "count", "spacing", "pair_gap", "material"}}
+      free-standing round columns; count + spacing make a row in one entry; pair_gap makes paired columns
+  {{"type": "colonnade", "facing_deg", "z", "width", "height", "depth", "bays", "column_diameter", "pair_gap", "offset",
+      "material"}}   a loggia: dark recess behind a row of columns with a beam and floor (depth up to 3 m)
+  {{"type": "balcony", "facing_deg", "z", "width", "depth", "offset", "rail_height", "material"}}   slab with railing
+  {{"type": "balustrade", "facing_deg", "z", "width", "height", "offset", "material"}}   along one wall, or
+  {{"type": "balustrade", "around": true, "z", "height", "material"}}   around the whole part (roof parapets)
+  {{"type": "pediment", "facing_deg", "z", "width", "height", "depth", "style": "triangle|segmental|broken", "gap",
+      "offset", "material"}}   over doors, windows, gables; z = its base line
+  {{"type": "finial", "x", "y", "z", "height", "radius", "style": "spike|ball", "material"}}   roof ornaments; x, y in
+      model coordinates; z = where it stands above the part's base, default the wall top
+  {{"type": "cresting", "z", "height", "spacing", "material"}}   iron railing on a roof ridge or flat roof top
+  Only details clearly visible in the photos; at most 30 per part. A flat panel remains right for signs, friezes and
+  low reliefs. Statues cannot be modelled: leave them out rather than standing a board in their place.
+- Walls that differ: "sides": [{{"facing_deg", any of opening_type, bay_spacing, opening_width, opening_height, sill,
+  pediment, pilasters, floors, ground, "segments"}}] overrides the walls facing that direction. "segments":
+  [{{"length": metres, same keys}}, ...] left to right seen from outside gives stretches of one wall their own bays,
+  e.g. wider gates near the ends and a tighter rhythm between them. level_height stays the same across the part.
+- "cornice_tiers": 1-4 makes the cornice a stepped moulding.
 - materials: add any new material you use ({{"srgb": [r,g,b], "roughness", "metallic"}}), colours from the photos.
 Reply with one JSON object: {{"parts": [{{"id": "...", "facade": {{...}}, "features": [...]}}, ...],
 "materials": {{...}}, "notes": ["..."]}}"""
 
 JUDGE_PROMPT = """You are an independent reviewer. Each attached image shows a reference PHOTO (or the satellite
-plan view) of {name} on the left and a render of a 3D massing model on the right, from about the same viewpoint
-(the last image: satellite left, model from straight above right, same scale). The model is meant to be a
-recognisable low-detail reconstruction (no textures, simplified ornament).
+plan view) of {name} on the left and a render of a 3D model on the right, from about the same viewpoint
+(the last image: satellite left, model from straight above right, same scale). The renders show geometry and material
+colours only: photo textures are added later, so judge shapes and architectural detail, not surface pattern.
 
-Score how well the model matches the real building, 1-5 each (5 = indistinguishable at this level of detail,
-3 = recognisable with clear errors, 1 = wrong):
+Score how well the model matches the real building, 1-5 each (5 = matches the photo, ornament included,
+3 = recognisable with clear errors or missing detail, 1 = wrong):
 plan (positions, plan shapes, orientation), silhouette (outline, proportions), heights, facade (window types,
-bays, entrances, key details), materials (colours). Then give overall 1-10 and the three biggest remaining errors.
+bays, entrances, and architectural detail such as columns, balconies, balustrades, pediments, mouldings and roof
+ornaments: real detail in the right place scores higher than a plain wall, wrong or misplaced detail lower),
+materials (colours). Then give overall 1-10 and the three biggest remaining errors.
 Reply with one JSON object:
 {{"scores": {{"plan": n, "silhouette": n, "heights": n, "facade": n, "materials": n}}, "overall": n,
   "errors": ["...", "...", "..."]}}"""
+
+FACADE_PARTS_PROMPT = """Landmark: {name}. A pass over the architectural detail of a 3D model changed these parts: {parts}.
+The first {n} attached images compare the reference (left) with the model BEFORE the pass (right). The next {n} show the
+same views AFTER it. Decide part by part, against the reference photos, where the detail got closer to the real building.
+Reply with one JSON object: {{"keep": ["ids of the parts whose AFTER version is better"], "why": "..."}}"""
 
 SELECT_PROMPT = """Landmark: {name}. Several candidate massing models were produced in successive review rounds.
 The first attached image(s) are the references: {refs}. Then come {n} candidate images, labelled CANDIDATE 1 ..
