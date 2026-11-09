@@ -41,7 +41,8 @@ def find_blender() -> str | None:
 
 def _run(cmd, timeout=120):
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace")
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except Exception as exc:  # pragma: no cover - environment dependent
         return -1, str(exc)

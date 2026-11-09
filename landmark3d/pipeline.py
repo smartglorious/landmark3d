@@ -741,16 +741,38 @@ def used_materials(massing: dict) -> set:
 
 
 MIN_LEVEL_M = 1.6
+# Words an AI uses for an opening the engine draws as one of its own types (it has no louver or shutter geometry).
+OPENING_ALIASES = {"louver": "rect", "louvre": "rect", "louvers": "rect", "louvres": "rect", "louvered": "rect",
+                   "louvred": "rect", "vent": "rect", "ventilation": "rect", "shutter": "rect", "shutters": "rect",
+                   "jalousie": "rect", "grille": "rect", "screen": "rect", "window": "rect", "door": "rect",
+                   "rectangular": "rect", "rect": "rect", "square": "square", "arch": "arch", "arched": "arch",
+                   "arcade": "arch", "storefront": "storefront", "shopfront": "storefront", "blank": "none"}
+ALIAS_PRIORITY = ("storefront", "arch", "square", "rect", "none")   # "arched_window" is an arch, not a plain window
+
+
+def _opening_alias(rule: dict) -> dict:
+    """Map an opening word by the words inside it, so variants ("horizontal_louver") need no entry of their own."""
+    kind = rule.get("opening_type")
+    if not isinstance(kind, str) or kind in ("curtain_wall", *spec_mod.OPENING_TYPES):
+        return rule
+    found = {OPENING_ALIASES[w] for w in re.split(r"[^a-z]+", kind.lower()) if w in OPENING_ALIASES}
+    alias = next((t for t in ALIAS_PRIORITY if t in found), None)
+    return dict(rule, opening_type=alias) if alias else rule
 
 
 def sanitize_facades(massing: dict) -> dict:
-    """Auto-correct facade values that only break the schema on thin parts (a 0.6 m eave deck, a fountain basin):
-    no openings below 2 m of wall, and a storey is never lower than 1.6 m."""
+    """Auto-correct facade values that only break the schema: opening words the engine has no geometry for become its
+    nearest type (see OPENING_ALIASES), and on thin parts (a 0.6 m eave deck, a fountain basin) there are no openings
+    below 2 m of wall and a storey is never lower than 1.6 m."""
     parts = []
     for p in massing.get("parts", []):
         fac = p.get("facade")
         if isinstance(fac, dict):
-            fac = dict(fac)
+            fac = dict(_opening_alias(fac))
+            if isinstance(fac.get("ground"), dict):
+                fac["ground"] = _opening_alias(fac["ground"])
+            if isinstance(fac.get("floors"), list):
+                fac["floors"] = [_opening_alias(r) if isinstance(r, dict) else r for r in fac["floors"]]
             try:
                 lh = float(fac.get("level_height")) if fac.get("level_height") is not None else None
             except (TypeError, ValueError):

@@ -100,3 +100,25 @@ def test_thin_parts_get_valid_facades():
     assert f["level_height"] == pipeline.MIN_LEVEL_M and f["openings"] is False
     assert spec_mod.validate_massing({"parts": out["parts"], "materials": {"wall": {"srgb": [1, 2, 3]}}}) == []
     assert deck["facade"]["level_height"] == 0.6                    # input untouched
+
+
+def test_opening_words_without_geometry_become_engine_types():
+    from landmark3d import pipeline, spec as spec_mod
+    hall = {"id": "hall", "footprint": "main", "base_z": 0, "height": 7, "roof": {"type": "hip"},
+            "facade": {"opening_type": "Louvre", "ground": {"opening_type": "shopfront"},
+                       "floors": [{"from": 0, "opening_type": "arch"}, {"from": 1, "opening_type": "louver"}]}}
+    out = pipeline.sanitize_facades({"parts": [hall]})
+    f = out["parts"][0]["facade"]
+    assert f["opening_type"] == "rect" and f["ground"]["opening_type"] == "storefront"
+    assert [r["opening_type"] for r in f["floors"]] == ["arch", "rect"]
+    assert spec_mod.validate_massing({"parts": out["parts"], "materials": {"wall": {"srgb": [1, 2, 3]}}}) == []
+    assert hall["facade"]["floors"][1]["opening_type"] == "louver"  # input untouched
+    plain = dict(hall, facade={"opening_type": "arch", "floors": [{"from": 0, "opening_type": "vent"}]})
+    pipeline.sanitize_facades({"parts": [plain]})
+    assert plain["facade"]["floors"][0]["opening_type"] == "vent"   # input untouched when the outer type is valid
+    for word, want in (("horizontal_louver", "rect"), ("arched_window", "arch"), ("Louvered Screen", "rect"),
+                       ("curtain_wall", "curtain_wall"), ("none", "none")):
+        one = dict(hall, facade={"opening_type": word})
+        assert pipeline.sanitize_facades({"parts": [one]})["parts"][0]["facade"]["opening_type"] == want
+    made_up = dict(hall, facade={"opening_type": "porthole"})
+    assert pipeline.sanitize_facades({"parts": [made_up]})["parts"][0]["facade"]["opening_type"] == "porthole"  # the AI is asked again

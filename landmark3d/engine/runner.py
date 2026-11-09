@@ -49,13 +49,31 @@ def photo_views(spec: dict) -> list[dict]:
     return out
 
 
+def _run_blender(cmd: list[str], timeout: int) -> tuple[int, str]:
+    """Run Blender headless. Returns (exit code, log); the log always says how Blender ended when it failed."""
+    p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                       encoding="utf-8", errors="replace")
+    log = (p.stdout or "") + (p.stderr or "")
+    if p.returncode != 0:
+        log += f"\n[landmark3d] Blender exited with code {_exit_code(p.returncode)}\n"
+    return p.returncode, log
+
+
+def _exit_code(code: int) -> str:
+    return f"{code} (0x{code & 0xffffffff:08X})"
+
+
 def preview(prj: Project, spec: dict, views: dict, out_dir: Path, timeout: int = 600) -> list[Path]:
-    """Quick renders of a candidate spec from given camera directions (photo review). Returns the PNG paths."""
+    """Quick renders of a candidate spec from given camera directions (photo review). Returns the PNG paths.
+    Only renders made by this call are returned: a failed run returns [], never the previous run's images."""
     exe = doctor.find_blender()
     if not exe:
         return []
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for name in views:
+        (out_dir / f"{name}.png").unlink(missing_ok=True)
+    (out_dir / "preview_result.json").unlink(missing_ok=True)
     job = {"spec": spec, "textures": {}, "panels": [], "panel_atlas": None, "preview": True,
            "views": list(views), "custom_views": views, "resolution": [960, 640],
            "out": {"glb": str(out_dir / "preview.glb"), "blend": str(out_dir / "preview.blend"),
@@ -64,9 +82,13 @@ def preview(prj: Project, spec: dict, views: dict, out_dir: Path, timeout: int =
     job_path.write_text(json.dumps(job), encoding="utf-8")
     cmd = [exe, "-b", "--factory-startup", "--python", str(SCRIPT), "--", str(job_path)]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
-        (out_dir / "preview.log").write_text((p.stdout or "") + (p.stderr or ""), encoding="utf-8")
+        code, log = _run_blender(cmd, timeout)
     except subprocess.TimeoutExpired:
+        prj.log("blender preview failed", {"dir": out_dir.name, "error": f"timed out after {timeout} s"})
+        return []
+    (out_dir / "preview.log").write_text(log, encoding="utf-8")
+    if code != 0:
+        prj.log("blender preview failed", {"dir": out_dir.name, "exit_code": _exit_code(code), "log": log[-300:]})
         return []
     return [out_dir / f"{name}.png" for name in views if (out_dir / f"{name}.png").exists()]
 
@@ -94,14 +116,16 @@ def build(prj: Project, timeout: int = 1800) -> dict:
     }
     job_path = prj.write_json("logs/build_job.json", job)
     cmd = [exe, "-b", "--factory-startup", "--python", str(SCRIPT), "--", str(job_path)]
+    prj.path("reports", "build_result.json").unlink(missing_ok=True)     # a failed build must not report the last one
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
-        log = (p.stdout or "") + (p.stderr or "")
+        code, log = _run_blender(cmd, timeout)
     except subprocess.TimeoutExpired:
         return {"ok": False, "errors": [f"Blender build timed out after {timeout} s"]}
     prj.path("logs", "blender_build.log").write_text(log, encoding="utf-8")
     res = prj.read_json("reports/build_result.json")
+    tail = "\n".join(log.splitlines()[-25:])[-1500:]
+    if code != 0:
+        return {"ok": False, "errors": [f"Blender exited with code {_exit_code(code)}", *(res or {}).get("errors", []), tail]}
     if not res:
-        tail = "\n".join(log.splitlines()[-25:])
-        return {"ok": False, "errors": ["Blender did not produce a result", tail[-1500:]]}
+        return {"ok": False, "errors": ["Blender did not produce a result", tail]}
     return res
