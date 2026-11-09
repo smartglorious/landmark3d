@@ -100,6 +100,13 @@ def preview(prj: Project, spec: dict, views: dict, out_dir: Path, timeout: int =
     return [out_dir / f"{name}.png" for name in views if (out_dir / f"{name}.png").exists()]
 
 
+def texture_container() -> str:
+    """The texture file format the build can use. KTX2 needs the toktx tool; without it the build keeps JPEG/PNG
+    (the standards-compatible fallback of plan M5). Recorded in the job, so the release says which one shipped."""
+    import shutil
+    return "ktx2" if shutil.which("toktx") else "jpeg"
+
+
 def build(prj: Project, timeout: int = 1800) -> dict:
     exe = doctor.find_blender()
     if not exe:
@@ -122,6 +129,7 @@ def build(prj: Project, timeout: int = 1800) -> dict:
     job = {
         "spec": spec,
         "engine": detail_engine.engine_settings(settings_mod.load().get("detail_engine_v2", False)),
+        "texture_container": texture_container(),
         "textures": repeat,
         "panels": panels,
         "panel_atlas": atlas,

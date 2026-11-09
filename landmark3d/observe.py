@@ -64,3 +64,33 @@ def persist(prj, doc: dict, sources: dict, parts: set) -> list[str]:
 def load(prj) -> dict | None:
     p = prj.root / "input" / "facade_observations.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def run_for_photos(prj, provider, name: str, photo_paths: list, sources: dict, parts: set, limit: int = 3):
+    """Propose observations for up to `limit` photos of the project and persist the valid ones together.
+
+    Returns (log, errors). The log has one entry per photo: accepted, or the reason it failed. A failed photo is never
+    turned into an invented observation; it is reported, so the spec can carry a warning (see pipeline.build_spec)."""
+    log, docs = [], []
+    for rel in photo_paths[:limit]:
+        src = next((s for s in sources.values() if s.get("path") == rel and s.get("kind") == "photo"), None)
+        if src is None:
+            log.append({"photo": rel, "result": "not a photo source in this project"})
+            continue
+        sid = next(k for k, v in sources.items() if v is src)
+        # Which part a photo shows is not known yet. The observations describe the main part when there is one, else the
+        # first part by name; the user corrects the assignment at A2 (not built yet). This is a stated assumption.
+        part_id = "main" if "main" in parts else sorted(parts)[0]
+        try:
+            doc = propose(provider, name, part_id, sid, prj.root / rel, src, parts)
+        except ai.AIError as exc:
+            log.append({"photo": rel, "source_id": sid, "result": f"failed: {exc}"[:300]})
+            continue
+        docs.extend(doc["observations"])
+        log.append({"photo": rel, "source_id": sid, "result": "accepted",
+                    "observations": len(doc["observations"])})
+    if not docs:
+        return log, []
+    merged = {"version": 1, "observations": docs}
+    errors = persist(prj, merged, sources, parts)
+    return log, errors

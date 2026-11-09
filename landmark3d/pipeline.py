@@ -303,6 +303,13 @@ def build_spec(prj: Project) -> dict:
             ai_notes = [f"AI massing failed, using sources/defaults: {exc}"[:300]]
             ai_error = str(exc)[:300]
 
+    observation_log = []
+    if provider is not None and settings_mod.load().get("facade_observations", False) and photos_used:
+        from . import observe
+        sources_map = {s["id"]: s for s in prj.read_json("input/sources.json", {"sources": []})["sources"]}
+        observation_log, _obs_errors = observe.run_for_photos(prj, provider, st["name"], photos_used, sources_map,
+                                                              {p["id"] for p in parts})
+
     spec = {
         "spec_version": 1,
         "id": st["id"], "name": st["name"], "location": st["location"],
@@ -320,6 +327,7 @@ def build_spec(prj: Project) -> dict:
         "photo_triage": triage_log if provider is not None else [],
         "photos": photos_used,                      # "photo n" in views / renders = photos[n-1]
         "views": photo_views_out,
+        "observations": observation_log,            # empty unless the facade_observations setting is on
     }
     errs = spec_mod.validate_massing({"parts": spec["parts"], "materials": spec["materials"]})
     if errs:
@@ -333,6 +341,10 @@ def build_spec(prj: Project) -> dict:
                                   "message": f"AI massing failed ({ai_error}); this plan is the no-AI fallback. Run the "
                                              f"spec again when the AI is available, or turn the AI off in Connections "
                                              f"to continue without it."})
+    for e in observation_log:
+        if str(e.get("result", "")).startswith("failed"):
+            spec["issues"].append({"severity": "warning", "part": None, "code": "observation_failed",
+                                   "message": f"facade observation failed for {e.get('photo')}: {e['result']}"[:300]})
     for e in review_log:
         if "limit" in str(e.get("result", "")).lower() or "failed" in str(e.get("result", "")).lower():
             spec["issues"].append({"severity": "warning", "part": None, "code": "photo_review_incomplete",

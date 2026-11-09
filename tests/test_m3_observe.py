@@ -88,3 +88,39 @@ def test_the_prompt_names_no_fixed_landmark():
     assert "Some Building" in text
     for word in ("Chợ", "UBND", "Bitexco", "Diamond", "Landmark 81"):
         assert word not in observe.PROMPT
+
+
+def test_a_failed_photo_is_logged_and_the_valid_ones_are_kept(prj):
+    from landmark3d.research import ai as ai_mod
+    Image.new("RGB", (40, 40)).save(prj.path("input", "photos", "b.jpg"))
+    sources = {"SRC-1": {"kind": "photo", "path": "input/photos/a.jpg", "use": "reference_only"},
+               "SRC-2": {"kind": "photo", "path": "input/photos/b.jpg", "use": "reference_only"}}
+
+    class Mixed(Fake):
+        def chat(self, system, prompt, web_search=False, images=None, max_tokens=8000):
+            if "SRC-2" in prompt:
+                raise ai_mod.AIError("usage limit reached")
+            return super().chat(system, prompt, web_search, images, max_tokens)
+    p = Mixed([good_doc("SRC-1")] * 3)
+    log, errors = observe.run_for_photos(prj, p, "Test Building", ["input/photos/a.jpg", "input/photos/b.jpg"],
+                                         sources, {"main"})
+    assert errors == []
+    assert [e["result"] for e in log][0] == "accepted"
+    assert log[1]["result"].startswith("failed") and "usage limit" in log[1]["result"]
+    assert len(observe.load(prj)["observations"]) == 1
+
+
+def test_a_path_that_is_not_a_photo_source_is_refused(prj):
+    log, errors = observe.run_for_photos(prj, Fake([]), "Test Building", ["input/photos/none.jpg"],
+                                         {"SRC-1": {"kind": "satellite", "path": "input/photos/none.jpg"}}, {"main"})
+    assert log[0]["result"].startswith("not a photo source") and errors == []
+
+
+def test_the_observation_setting_is_off_by_default():
+    from landmark3d import settings
+    assert settings.DEFAULTS["facade_observations"] is False
+
+
+def test_texture_container_is_recorded_honestly():
+    from landmark3d.engine import runner
+    assert runner.texture_container() in ("ktx2", "jpeg")
