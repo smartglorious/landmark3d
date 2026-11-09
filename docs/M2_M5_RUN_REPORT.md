@@ -94,3 +94,53 @@ Tests: 322 offline tests pass (249 before this run). `git diff --check` is clean
 3. Approve an AI benchmark on the dev projects with the flag on (costs quota).
 4. A held-out set: fix a list of new landmarks before any held-out run.
 5. Continue with the remaining M4 slices and the M3 AI observation step, or stop here.
+
+
+## Update (second pass, same day)
+
+### Dev benchmark: judge score with the flag off and on (same spec, same photos)
+Judge: gpt-5.6-sol (provider chosen by routing "auto" at run time). Three independent readings per score.
+
+| Project | Flag off | Flag on | Change |
+|---|---|---|---|
+| UBND | 4.67 (5, 4, 5) | 4.33 (5, 4, 4) | -0.33, within reading noise |
+| Chợ Bình Tây | 5.00 (5, 5, 5) | 5.00 (5, 6, 4) | 0.00 |
+
+Facade score stayed at 2.0 in all four runs. The flag does not yet produce a judge improvement. By the
+baseline rule (keep a change only if the score does not drop), the flag-on geometry is not an improvement and
+must not be enabled by default.
+
+Bug found before the benchmark: preview renders (used by the judge and the photo review) did not carry the
+engine flag, so a flag-on benchmark would have scored version 1 geometry. Fixed in dde6d29 with a regression test.
+
+### M3 observation step
+`landmark3d/observe.py`: asks the model for one observation document per photo, validates it against the schema and
+the project, retries with the validation errors, and writes `input/facade_observations.json` only when it
+validates. Tested with a fake provider (accepted first try, accepted after retry, refused after retries, file
+written only when valid). Not wired into the pipeline and not run against the model, so the 80% grid-alignment
+gate is still not measured.
+
+### M4 slices
+Ten generators are now registered (plinth, pilaster, brise-soleil array, dormer, cupola, ridge cap, chimney,
+lattice mast, rose window, finial), each with tests. The builder does not place them yet: a spec has no field
+that asks for them. The "dev improvement per slice" gate is not measured.
+
+### M5 measured checks
+- glTF validator (gltf-validator, latest npm release) on four built GLB files: **0 errors, 0 warnings** for
+  the UBND and Chợ Bình Tây builds with the flag off and on, and the M2 synthetic fixture.
+- Build accounting now reports real texture pixels (it reported 0 before).
+- Still not done: normal maps, AO and normal baking, KTX2 with a PNG/JPEG fallback, and wiring the texel and
+  padding checks into the exporter.
+
+### Test count
+346 offline tests pass on `main` (1640fc2). Blender smoke build (CI's synthetic hall) passes.
+
+### Status against the exit gates (unchanged in substance)
+- M2: partial. Allocator reaches 0.65 on UBND, 0.51 on Chợ Bình Tây; visual check only.
+- M3: core and observation step built; AI observations, grid-alignment gate and A2 panel not done.
+- M4: ten slices built, not placed; no dev improvement measured.
+- M5: deterministic checks, validator zero-error on samples; bakes and KTX2 not done.
+
+### Still open, needs a decision
+Enabling the flag, pushing `main`, a release, the held-out set, and whether to spend quota on a
+flag-on AI benchmark again after the M4 slices are placed.
