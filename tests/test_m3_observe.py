@@ -1,0 +1,90 @@
+"""M3: the observation step, with a fake provider. Offline; no AI is called."""
+import json
+
+import pytest
+from PIL import Image
+
+from landmark3d import observe
+from landmark3d.project import Project
+from landmark3d.research import ai
+
+
+def good_doc(source_id="SRC-1", part="main"):
+    return {"version": 1, "observations": [{
+        "id": "FO-1", "source_id": source_id, "part_id": part, "facade_run": 0,
+        "quad": [[0.08, 0.18], [0.92, 0.19], [0.94, 0.90], [0.06, 0.89]],
+        "floor_lines": [0.90, 0.67, 0.43, 0.18], "bay_lines": [0.08, 0.2, 0.32, 0.44, 0.56, 0.68, 0.8, 0.92],
+        "elements": [{"id": "FE-1", "type": "arched_window", "bbox": [0.22, 0.45, 0.30, 0.63], "floor": 1, "bay": 1,
+                      "confidence": 0.9, "provenance": "observed"}],
+        "confidence": 0.85}]}
+
+
+class Fake(ai.Provider):
+    name = "fake"
+
+    def __init__(self, replies):
+        super().__init__("fake-model")
+        self.replies = list(replies)
+        self.prompts = []
+
+    def chat(self, system, prompt, web_search=False, images=None, max_tokens=8000):
+        self.prompts.append((prompt, images))
+        return ai.AIResult(json.dumps(self.replies.pop(0)), "fake", "fake-model", [])
+
+
+@pytest.fixture()
+def prj(tmp_path, monkeypatch):
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    import importlib
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    p = Project.create("Observe Test", "X")
+    photo = p.path("input", "photos", "a.jpg")
+    Image.new("RGB", (200, 150), (90, 90, 90)).save(photo)
+    return p
+
+
+SOURCE = {"kind": "photo", "use": "reference_only", "path": "input/photos/a.jpg"}
+
+
+def test_a_valid_answer_is_accepted_on_the_first_try(prj):
+    p = Fake([good_doc()])
+    doc = observe.propose(p, "Test Building", "main", "SRC-1", prj.root / "input/photos/a.jpg", SOURCE, {"main"})
+    assert doc["observations"][0]["id"] == "FO-1"
+    assert len(p.prompts) == 1
+    prompt, images = p.prompts[0]
+    assert "SRC-1" in prompt and "main" in prompt and images
+
+
+def test_an_invalid_answer_is_retried_with_its_errors_then_accepted(prj):
+    bad = good_doc()
+    bad["observations"][0]["floor_lines"] = [0.1, 0.5, 0.3]        # not ordered
+    p = Fake([bad, good_doc()])
+    doc = observe.propose(p, "Test Building", "main", "SRC-1", prj.root / "input/photos/a.jpg", SOURCE, {"main"})
+    assert doc["observations"][0]["id"] == "FO-1"
+    assert len(p.prompts) == 2 and "failed validation" in p.prompts[1][0]
+
+
+def test_no_valid_answer_raises_and_writes_nothing(prj):
+    bad = good_doc()
+    bad["observations"][0]["part_id"] = "tower"                     # unknown part, every time
+    p = Fake([bad, bad, bad])
+    with pytest.raises(ai.AIError):
+        observe.propose(p, "Test Building", "main", "SRC-1", prj.root / "input/photos/a.jpg", SOURCE, {"main"})
+    assert observe.load(prj) is None
+
+
+def test_persist_writes_only_a_validated_document(prj):
+    sources = {"SRC-1": SOURCE}
+    assert observe.persist(prj, good_doc(), sources, {"main"}) == []
+    assert observe.load(prj)["observations"][0]["id"] == "FO-1"
+    errors = observe.persist(prj, good_doc(source_id="SRC-9"), sources, {"main"})
+    assert errors and observe.load(prj)["observations"][0]["source_id"] == "SRC-1"   # previous file kept
+
+
+def test_the_prompt_names_no_fixed_landmark():
+    text = observe.build_prompt("Some Building", "main", "SRC-1")
+    assert "Some Building" in text
+    for word in ("Chợ", "UBND", "Bitexco", "Diamond", "Landmark 81"):
+        assert word not in observe.PROMPT
