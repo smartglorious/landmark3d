@@ -10,6 +10,7 @@ import copy
 from . import observations as obs_mod
 
 MIN_CONFIDENCE = 0.7                    # plan 5.3: only observations this sure take part in the gates
+CONFLICT_CONFIDENCE = 0.8              # confident enough that a disagreement is a conflict, not noise
 HIDDEN_CONFIDENCE_CAP = 0.6             # reused grammar on hidden facades is never shown as confidently observed
 PORTAL_TYPES = ("entrance_portal", "portal", "entrance")
 GROUND_TYPES = ("storefront", "storefront_arch", "ground_arch")
@@ -102,3 +103,20 @@ def facade_system(style_family: str, style_confidence: float, runs: list[dict]) 
     keep = ("run", "grammar", "overrides", "evidence")
     return {"style_family": style_family, "style_confidence": style_confidence,
             "runs": [{k: r[k] for k in keep} for r in runs]}
+
+
+def structure_conflicts(observations: list[dict], part_id: str) -> list[str]:
+    """Confident observations of one part that disagree on how many floors or bays the facade has. Merging matches
+    elements by id, and ids are per photo, so this is the check that catches photos which read the same facade
+    differently (production baseline: conflicting confident evidence blocks the run)."""
+    obs = [o for o in usable(observations, part_id) if o.get("confidence", 0) >= CONFLICT_CONFIDENCE]
+    if len(obs) < 2:
+        return []
+    floors = {len(o["floor_lines"]) - 1 for o in obs}
+    bays = {len(o["bay_lines"]) - 1 for o in obs}
+    out = []
+    if len(floors) > 1:
+        out.append(f"{part_id}: confident observations disagree on the number of floors {sorted(floors)}")
+    if len(bays) > 1:
+        out.append(f"{part_id}: confident observations disagree on the number of bays {sorted(bays)}")
+    return out

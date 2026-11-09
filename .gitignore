@@ -25,3 +25,6 @@ reports/**/*.webp
 
 # three.js viewer files downloaded by `landmark3d setup` (pinned version, see installer.py)
 landmark3d/web/vendor/
+
+# Local tool downloads (KTX-Software, validated by SHA-256 at install)
+.tools/

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -100,11 +101,19 @@ def preview(prj: Project, spec: dict, views: dict, out_dir: Path, timeout: int =
     return [out_dir / f"{name}.png" for name in views if (out_dir / f"{name}.png").exists()]
 
 
-def texture_container() -> str:
-    """The texture file format the build can use. KTX2 needs the toktx tool; without it the build keeps JPEG/PNG
-    (the standards-compatible fallback of plan M5). Recorded in the job, so the release says which one shipped."""
+TOOLS_DIR = Path(__file__).resolve().parents[2] / ".tools"      # local downloads, validated by SHA-256 when installed
+
+
+def toktx_path() -> str | None:
     import shutil
-    return "ktx2" if shutil.which("toktx") else "jpeg"
+    local = TOOLS_DIR / "ktx" / "bin" / ("toktx.exe" if os.name == "nt" else "toktx")
+    return str(local) if local.is_file() else shutil.which("toktx")
+
+
+def texture_container() -> str:
+    """The texture file format the build can use. KTX2 needs the toktx tool (local install or PATH); without it the
+    build keeps JPEG/PNG, the standards-compatible fallback of plan M5. Recorded in the job, so the release says which."""
+    return "ktx2" if toktx_path() else "jpeg"
 
 
 def build(prj: Project, timeout: int = 1800) -> dict:
@@ -128,7 +137,9 @@ def build(prj: Project, timeout: int = 1800) -> dict:
     from ..detail import engine as detail_engine
     job = {
         "spec": spec,
-        "engine": detail_engine.engine_settings(settings_mod.load().get("detail_engine_v2", False)),
+        "engine": detail_engine.engine_settings(settings_mod.load().get("detail_engine_v2", False),
+                                                bool(settings_mod.load().get("bake_ao", False)),
+                                                int(settings_mod.load().get("ao_size", 256))),
         "texture_container": texture_container(),
         "textures": repeat,
         "panels": panels,

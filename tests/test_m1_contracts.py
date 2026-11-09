@@ -380,7 +380,7 @@ def test_engine_settings_are_persisted_in_the_build_job(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, "", ""))
     runner.build(prj)
     job = json.loads((prj.root / "logs" / "build_job.json").read_text(encoding="utf-8"))
-    assert job["engine"] == {"detail_engine_v2": False, "library_version": registry.LIBRARY_VERSION}
+    assert job["engine"] == {"detail_engine_v2": False, "library_version": registry.LIBRARY_VERSION, "bake_ao": False, "ao_size": 256}
 
 
 def test_the_engine_setting_is_part_of_the_build_identity(tmp_path, monkeypatch):

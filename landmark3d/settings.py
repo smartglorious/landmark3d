@@ -39,6 +39,8 @@ DEFAULTS = {
     # correct the model. 0 disables the loop.
     "photo_review_rounds": 3,
     "facade_pass": True,
+    "bake_ao": False,            # M5: bake ambient occlusion per part (needs detail_engine_v2 on; Cycles, Blender)
+    "ao_size": 256,
     "facade_observations": False,  # M3: the AI proposes facade observations per photo (calls the AI; off by default)
     "detail_engine_v2": False,   # M1: contracts only; the flag must stay off until a v2 generator is released
     "facade_review_rounds": 2,  # extra facade rounds driven by the judge's errors (kept only if the score rises)      # AI pass for per-floor facades and detail features after the review rounds

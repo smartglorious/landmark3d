@@ -157,4 +157,4 @@ def test_previews_used_by_the_judge_carry_the_engine_flag(tmp_path, monkeypatch)
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
     monkeypatch.setattr(doctor, "find_blender", lambda: "blender")
     runner.preview(prj, {"parts": [], "materials": {}, "budgets": {}, "footprint": {"local": []}}, {}, tmp_path / "out")
-    assert seen["engine"] == {"detail_engine_v2": True, "library_version": "1.0.0"}
+    assert seen["engine"] == {"detail_engine_v2": True, "library_version": "1.0.0", "bake_ao": False, "ao_size": 256}

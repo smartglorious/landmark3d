@@ -124,3 +124,41 @@ def test_the_observation_setting_is_off_by_default():
 def test_texture_container_is_recorded_honestly():
     from landmark3d.engine import runner
     assert runner.texture_container() in ("ktx2", "jpeg")
+
+
+def test_observation_ids_stay_unique_across_photos(prj):
+    Image.new("RGB", (40, 40)).save(prj.path("input", "photos", "b.jpg"))
+    sources = {"SRC-1": {"kind": "photo", "path": "input/photos/a.jpg", "use": "reference_only"},
+               "SRC-2": {"kind": "photo", "path": "input/photos/b.jpg", "use": "reference_only"}}
+    p = Fake([good_doc("SRC-1"), good_doc("SRC-2")])          # both answer FO-1 and FE-1
+    log, errors = observe.run_for_photos(prj, p, "Test Building", ["input/photos/a.jpg", "input/photos/b.jpg"],
+                                         sources, {"main"})
+    assert errors == []
+    doc = observe.load(prj)
+    ids = [ob["id"] for ob in doc["observations"]]
+    assert ids == ["SRC-1/FO-1", "SRC-2/FO-1"]
+    assert len({el["id"] for ob in doc["observations"] for el in ob["elements"]}) == 2
+
+
+def test_confident_observations_that_disagree_on_floors_are_a_conflict():
+    from landmark3d import observation_grammar as og2
+    a = good_doc("SRC-1")["observations"][0]
+    b = good_doc("SRC-2")["observations"][0]
+    b["id"] = "SRC-2/FO-1"
+    b["floor_lines"] = [0.9, 0.6, 0.3, 0.1, 0.05]          # three floors, not two
+    b["confidence"] = 0.9
+    a["confidence"] = 0.9
+    issues = og2.structure_conflicts([a, b], "main")
+    assert issues and "floors" in issues[0]
+    assert og2.policy(2, issues, 0.9) == "blocked"
+    assert og2.structure_conflicts([a], "main") == []
+
+
+def test_low_confidence_disagreement_is_not_a_conflict():
+    from landmark3d import observation_grammar as og2
+    a = good_doc("SRC-1")["observations"][0]
+    b = good_doc("SRC-2")["observations"][0]
+    b["floor_lines"] = [0.9, 0.6, 0.3, 0.1, 0.05]
+    b["confidence"] = 0.75
+    a["confidence"] = 0.9
+    assert og2.structure_conflicts([a, b], "main") == []

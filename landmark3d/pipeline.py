@@ -341,6 +341,14 @@ def build_spec(prj: Project) -> dict:
                                   "message": f"AI massing failed ({ai_error}); this plan is the no-AI fallback. Run the "
                                              f"spec again when the AI is available, or turn the AI off in Connections "
                                              f"to continue without it."})
+    if observation_log:
+        from . import observe as observe_mod
+        from . import observation_grammar as obs_grammar
+        saved = observe_mod.load(prj) or {"observations": []}
+        for part in parts:
+            for msg in obs_grammar.structure_conflicts(saved["observations"], part["id"]):
+                spec["issues"].append({"severity": "warning", "part": part["id"], "code": "observation_conflict",
+                                       "message": msg + " - review at A2 before the photos are used for structure"})
     for e in observation_log:
         if str(e.get("result", "")).startswith("failed"):
             spec["issues"].append({"severity": "warning", "part": None, "code": "observation_failed",

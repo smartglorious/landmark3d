@@ -19,6 +19,7 @@ from landmark3d import geom  # noqa: E402
 from landmark3d.detail import accounting as detail_accounting, engine as detail_engine  # noqa: E402
 from landmark3d.detail import openings as detail_openings  # noqa: E402
 from landmark3d.detail import materials as detail_materials, placement as detail_placement  # noqa: E402
+from landmark3d.engine import bake as engine_bake  # noqa: E402
 
 
 def srgb_to_linear(c):
@@ -456,6 +457,7 @@ def main():
     # Details share what is left of the whole budget: a small part such as a tower is often the most ornate one.
     feature_left = max(0, tri_budget - sum(g.triangles() for _, _, g in meshes))
     flag_on = bool((job.get("engine") or {}).get("detail_engine_v2"))
+    part_objects = []
     articulation_report = {"placed": [], "skipped": []}
     for part, poly, gm in meshes:
         feature_left -= geom.features(poly, part["base_z"], part["base_z"] + part["height"], part.get("taper"),
@@ -488,12 +490,21 @@ def main():
         ob = link_mesh(f"L3D_{part['id']}", gm, tag_mat, mats)
         planar_uvs(ob)
         ob["l3d_part"] = part["id"]
+        part_objects.append((part["id"], ob))
 
     panels_made = add_panels(job, meshes, warnings)
     warnings += detail_materials.architectural_warnings(spec)
+    ao_report = None
+    engine_cfg = job.get("engine") or {}
+    if engine_cfg.get("bake_ao") and engine_cfg.get("detail_engine_v2"):
+        ao_report = engine_bake.bake_parts(part_objects, int(engine_cfg.get("ao_size", 256)))
+        warnings += [f"AO bake {p['part']}: {p['result']}" for p in ao_report["parts"] if p["result"] != "baked"]
     acc_parts = [detail_accounting.PartMesh(part["id"], gm) for part, _, gm in meshes]
     tex_acc = [{"width": t.get("width", 0), "height": t.get("height", 0), "material": name}
                for name, t in job.get("textures", {}).items()]
+    if ao_report:
+        tex_acc += [{"width": ao_report["size"], "height": ao_report["size"], "material": "ao_" + p["part"]}
+                    for p in ao_report["parts"] if p["result"] == "baked"]
     accounting = detail_accounting.summarize(acc_parts, budgets.get("triangles_target"), budgets.get("triangles_max"),
                                              textures=tex_acc)
     acc_errors = detail_accounting.check(acc_parts, accounting)
@@ -536,6 +547,7 @@ def main():
               "panels": panels_made, "textured_materials": sorted(job.get("textures", {}).keys()),
               "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
               "accounting": accounting, "engine": job.get("engine") or {}, "articulation": articulation_report,
+              "ao": ao_report,
               "openings_lod": {pid: st["lod_counts"] for pid, st in opening_stats.items()},
               "openings_allocation": {pid: {k: st["allocation"][k] for k in ("added_triangles", "target_utilization",
                                                                           "low_utilization_reason")}

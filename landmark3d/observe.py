@@ -86,6 +86,12 @@ def run_for_photos(prj, provider, name: str, photo_paths: list, sources: dict, p
         except ai.AIError as exc:
             log.append({"photo": rel, "source_id": sid, "result": f"failed: {exc}"[:300]})
             continue
+        # Ids are scoped to their photo: two photos each answer FO-1 and FE-1, and those are different things. A
+        # matching element in two photos is not assumed the same; merging across photos needs identity evidence.
+        for ob in doc["observations"]:
+            ob["id"] = f"{sid}/{ob['id']}"
+            for el in ob["elements"]:
+                el["id"] = f"{ob['id']}/{el['id']}"
         docs.extend(doc["observations"])
         log.append({"photo": rel, "source_id": sid, "result": "accepted",
                     "observations": len(doc["observations"])})
