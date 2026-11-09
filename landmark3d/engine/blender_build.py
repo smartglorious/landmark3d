@@ -172,6 +172,25 @@ def photo_camera(scene, cd, bounds, cv, fill=0.88, ground_z=None):
     return place(hi), mid
 
 
+def focus_hidden(scene, cam_loc, fb, focus, max_hidden=0.5):
+    """True when more than `max_hidden` of the rays from the camera to points on the focused part's box hit another
+    part first."""
+    (x0, y0, z0), (x1, y1, z1) = fb
+    targets = [Vector(((x0 + x1) / 2, (y0 + y1) / 2, z0 + (z1 - z0) * f)) for f in (0.3, 0.55, 0.8)]
+    targets += [Vector((x, y, z0 + (z1 - z0) * 0.55)) for x, y in ((x0, y0), (x1, y1), (x0, y1), (x1, y0))]
+    bpy.context.view_layer.update()
+    dg = bpy.context.evaluated_depsgraph_get()
+    hidden = 0
+    for t in targets:
+        d = t - Vector(cam_loc)
+        hit, _, _, _, ob, _ = scene.ray_cast(dg, Vector(cam_loc), d.normalized(), distance=max(0.0, d.length - 0.05))
+        part = (getattr(ob, "original", None) or ob).get("l3d_part") if hit and ob is not None else None
+        if part not in (None, focus):
+            hidden += 1
+    print("L3D_FOCUS", focus, f"{hidden}/{len(targets)} rays hidden")
+    return hidden > max_hidden * len(targets)
+
+
 def render_views(out_dir, bounds, views, custom=None, resolution=(1280, 800), part_bounds=None):
     scene = bpy.context.scene
     for eng in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE", "BLENDER_WORKBENCH"):
@@ -260,6 +279,10 @@ def render_views(out_dir, bounds, views, custom=None, resolution=(1280, 800), pa
             cd.lens = 40
             fb = (part_bounds or {}).get(cv.get("focus")) if cv.get("focus") else None
             cam.location, c_view = photo_camera(scene, cd, fb or bounds, cv, ground_z=bounds[0][2])
+            if fb and focus_hidden(scene, cam.location, fb, cv["focus"]):
+                # other volumes stand between the camera and the part (a raised shot over the roofs): a close-up
+                # would show only them - frame the whole building instead
+                cam.location, c_view = photo_camera(scene, cd, bounds, cv)
             cam.rotation_mode = "QUATERNION"
             cam.rotation_quaternion = (c_view - cam.location).to_track_quat("-Z", "Y")
         else:

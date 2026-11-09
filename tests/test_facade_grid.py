@@ -70,9 +70,33 @@ def test_checker_catches_a_window_on_a_pilaster():
     assert any("overlaps a pilaster" in m for m in geom.check_facade(bad))
 
 
-def test_facade_issues_reported_to_the_ai():
+def test_auto_narrowed_windows_are_notes_not_errors():
+    """A window wider than its bay is narrowed by the layout engine (the geometry is right): it must not make the
+    AI facade pass fail - it is reported as a note."""
     from landmark3d import pipeline
     part = {"id": "wing", "footprint": {"rect": {"cx": 0, "cy": 0, "w": 22.75, "d": 15.5, "rot_deg": 137}},
             "base_z": 0, "height": 13, "roof": {"type": "hip"}, "facade": dict(WING, opening_width=3.5, floors=[])}
-    issues = pipeline.facade_issues({"parts": [part]}, [(-20, -20), (20, -20), (20, 20), (-20, 20)])
-    assert issues and issues[0].startswith("part wing:")
+    notes = []
+    issues = pipeline.facade_issues({"parts": [part]}, [(-20, -20), (20, -20), (20, 20), (-20, 20)], notes)
+    assert issues == []
+    assert notes and notes[0].startswith("part wing:") and "narrowed" in notes[0]
+
+
+def test_unused_materials_are_pruned():
+    from landmark3d import pipeline
+    m = {"parts": [{"id": "a", "material": {"wall": "stucco"}, "features": [{"type": "disc", "material": "clock"}]}],
+         "materials": {"stucco": {}, "roof": {}, "trim": {}, "clock": {}, "dark_opening": {}, "opening": {}}}
+    out = pipeline.prune_materials(m)
+    assert set(out["materials"]) == {"stucco", "roof", "trim", "clock", "opening"}
+    assert pipeline.material_errors(out) == []
+
+
+def test_thin_parts_get_valid_facades():
+    from landmark3d import pipeline, spec as spec_mod
+    deck = {"id": "deck", "footprint": "main", "base_z": 0, "height": 0.6, "roof": {"type": "flat"},
+            "facade": {"level_height": 0.6, "opening_type": "rect"}}
+    out = pipeline.sanitize_facades({"parts": [deck]})
+    f = out["parts"][0]["facade"]
+    assert f["level_height"] == pipeline.MIN_LEVEL_M and f["openings"] is False
+    assert spec_mod.validate_massing({"parts": out["parts"], "materials": {"wall": {"srgb": [1, 2, 3]}}}) == []
+    assert deck["facade"]["level_height"] == 0.6                    # input untouched

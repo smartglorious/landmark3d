@@ -77,6 +77,9 @@ Web images are used as reference and, when the licence allows (public domain, CC
   - Pilasters stand on the bay lines, windows sit in the bay centres, and the entrance takes the central bay(s). All floors share the grid; a floor may use every 2nd or 3rd bay.
   - Window, pediment and awning widths are clamped so they never touch a pilaster. Heights stay clear of string courses and the cornice.
   - `geom.check_facade` verifies that no window overlaps a pilaster, the entrance or another window. `pipeline.facade_issues` sends such problems back to the AI as validation errors.
+  - The layout engine's own corrections, like a window narrowed to fit its bay, are only notes and do not fail an AI pass.
+  - Before the answer is checked, the facade pass removes materials no part uses and gives thin parts (< 2 m) no openings and a storey height of at least 1.6 m.
+  - Close-up cameras fall back to the whole building when other volumes hide more than half of the focused part.
 - **Roofs** (`flat`, `gable`, `hip`, `pyramid`, `dome`, `shed`). Every roof can also take:
   - `overhang`: the eaves project this many metres past the walls, with a soffit underneath. The ridge height stays the same.
   - `upturn`: the convex eave corners curl up by this many metres, for East Asian roofs (temples, pagodas, communal houses, Sino-French markets).

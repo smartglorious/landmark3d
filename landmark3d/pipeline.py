@@ -712,9 +712,10 @@ def normalise_glass(massing: dict) -> None:
                 m["roughness"] = min(float(m.get("roughness", 0.1) or 0.1), 0.1)
 
 
-def facade_issues(massing: dict, main) -> list[str]:
-    """Deterministic facade check of every punched facade: the layout engine's own corrections (e.g. a window wider
-    than its bay) and any overlap between windows, pilasters and the entrance. Empty = consistent."""
+def facade_issues(massing: dict, main, notes: list | None = None) -> list[str]:
+    """Deterministic facade check of every punched facade: any overlap between windows, pilasters and the entrance.
+    Empty = consistent. The layout engine's own corrections (a window wider than its bay is narrowed to fit) are not
+    errors - the built geometry is already right - and go to `notes` when given."""
     out = []
     for p in massing.get("parts", []):
         fac = p.get("facade") or {}
@@ -726,8 +727,48 @@ def facade_issues(massing: dict, main) -> list[str]:
         except Exception:
             continue
         lay = geom.facade_layout(poly, float(p["base_z"]), float(p["base_z"]) + float(p["height"]), fac)
-        out += [f"part {p['id']}: {m}" for m in lay["issues"] + geom.check_facade(lay)]
+        out += [f"part {p['id']}: {m}" for m in geom.check_facade(lay)]
+        if notes is not None:
+            notes += [f"part {p['id']}: {m}" for m in lay["issues"]]
     return out
+
+
+def used_materials(massing: dict) -> set:
+    slots = {"wall": "wall", "roof": "roof", "trim": "trim"}      # a part without a mapping uses these names
+    used = {m for p in massing.get("parts", []) for m in {**slots, **(p.get("material") or {})}.values()}
+    used |= {f.get("material", "trim") for p in massing.get("parts", []) for f in (p.get("features") or [])}
+    return used
+
+
+MIN_LEVEL_M = 1.6
+
+
+def sanitize_facades(massing: dict) -> dict:
+    """Auto-correct facade values that only break the schema on thin parts (a 0.6 m eave deck, a fountain basin):
+    no openings below 2 m of wall, and a storey is never lower than 1.6 m."""
+    parts = []
+    for p in massing.get("parts", []):
+        fac = p.get("facade")
+        if isinstance(fac, dict):
+            fac = dict(fac)
+            try:
+                lh = float(fac.get("level_height")) if fac.get("level_height") is not None else None
+            except (TypeError, ValueError):
+                lh = None
+            if lh is not None and lh < MIN_LEVEL_M:
+                fac["level_height"] = MIN_LEVEL_M
+            if float(p.get("height", 0) or 0) < 2.0:
+                fac["openings"] = False
+            p = dict(p, facade=fac)
+        parts.append(p)
+    return dict(massing, parts=parts)
+
+
+def prune_materials(massing: dict) -> dict:
+    """Drop materials no part or feature uses (harmless leftovers of an AI answer, e.g. a colour noted for openings)."""
+    used = used_materials(massing) | {"opening"}
+    mats = {k: v for k, v in (massing.get("materials") or {}).items() if k in used}
+    return dict(massing, materials=mats)
 
 
 def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: dict, feedback=None, sheets=None,
@@ -757,7 +798,7 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
             parts.append(dict(p, **{k: q[k] for k in ("facade", "features") if q and k in q}))
         mats = dict(massing.get("materials") or {})
         mats.update(o.get("materials") or {})
-        return dict(massing, parts=parts, materials=mats)
+        return sanitize_facades(prune_materials(dict(massing, parts=parts, materials=mats)))
 
     try:
         obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
@@ -767,8 +808,12 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
         return massing, entry
     out = merged(obj)
+    fixed = []
+    facade_issues(out, main, fixed) if main else None
     n_feat = sum(len(p.get("features") or []) for p in out["parts"])
     entry.update({"verdict": f"facades refined, {n_feat} detail features", "differences": obj.get("notes", [])[:8]})
+    if fixed:
+        entry["layout_fixes"] = fixed[:12]
     prj.log("facade pass", {"features": n_feat})
     return out, entry
 
@@ -824,9 +869,7 @@ def material_errors(massing: dict, max_materials: int | None = None) -> list[str
     """Parts must use the materials the AI defined (not silently fall back to the defaults), and vice versa;
     with max_materials, the number of materials the model uses (opening included) must fit the budget."""
     defined = set(massing.get("materials") or {})
-    slots = {"wall": "wall", "roof": "roof", "trim": "trim"}      # a part without a mapping uses these names
-    used = {m for p in massing.get("parts", []) for m in {**slots, **(p.get("material") or {})}.values()}
-    used |= {f.get("material", "trim") for p in massing.get("parts", []) for f in (p.get("features") or [])}
+    used = used_materials(massing)
     errs = [f"part material '{m}' is not defined in materials" for m in sorted(used - defined - set(spec_mod.DEFAULT_MATERIALS))]
     errs += [f"material '{m}' is defined but no part uses it (assign it to the parts it belongs to)"
              for m in sorted(defined - used - {"opening"})]
