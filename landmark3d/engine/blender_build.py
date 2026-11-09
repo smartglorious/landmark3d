@@ -18,6 +18,7 @@ sys.path.insert(0, TOOL_ROOT)
 from landmark3d import geom  # noqa: E402
 from landmark3d.detail import accounting as detail_accounting, engine as detail_engine  # noqa: E402
 from landmark3d.detail import openings as detail_openings  # noqa: E402
+from landmark3d.detail import materials as detail_materials, placement as detail_placement  # noqa: E402
 
 
 def srgb_to_linear(c):
@@ -454,9 +455,15 @@ def main():
                                                window_builder=win_builder)
     # Details share what is left of the whole budget: a small part such as a tower is often the most ornate one.
     feature_left = max(0, tri_budget - sum(g.triangles() for _, _, g in meshes))
+    flag_on = bool((job.get("engine") or {}).get("detail_engine_v2"))
+    articulation_report = {"placed": [], "skipped": []}
     for part, poly, gm in meshes:
         feature_left -= geom.features(poly, part["base_z"], part["base_z"] + part["height"], part.get("taper"),
                                       part.get("features"), gm, max(0, feature_left))
+        art = detail_placement.place_articulation(gm, poly, part, flag_on, max(0, feature_left))
+        feature_left -= art["triangles"]
+        articulation_report["placed"] += art["placed"]
+        articulation_report["skipped"] += art["skipped"]
         pm = part.get("material", {})
         tag_mat = {"wall": pm.get("wall", "wall"), "roof": pm.get("roof", "roof"), "trim": pm.get("trim", "trim"),
                    "opening": "opening", "accent": pm.get("accent", pm.get("trim", "trim"))}
@@ -483,6 +490,7 @@ def main():
         ob["l3d_part"] = part["id"]
 
     panels_made = add_panels(job, meshes, warnings)
+    warnings += detail_materials.architectural_warnings(spec)
     acc_parts = [detail_accounting.PartMesh(part["id"], gm) for part, _, gm in meshes]
     tex_acc = [{"width": t.get("width", 0), "height": t.get("height", 0), "material": name}
                for name, t in job.get("textures", {}).items()]
@@ -527,7 +535,7 @@ def main():
               "materials": len(used), "material_names": used, "openings": openings_total, "compression": comp,
               "panels": panels_made, "textured_materials": sorted(job.get("textures", {}).keys()),
               "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
-              "accounting": accounting, "engine": job.get("engine") or {},
+              "accounting": accounting, "engine": job.get("engine") or {}, "articulation": articulation_report,
               "openings_lod": {pid: st["lod_counts"] for pid, st in opening_stats.items()},
               "openings_allocation": {pid: {k: st["allocation"][k] for k in ("added_triangles", "target_utilization",
                                                                           "low_utilization_reason")}

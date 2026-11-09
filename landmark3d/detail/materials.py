@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 
-from ..textures import licence_allows
 
 ARCH_MAX_METALLIC = 0.1
 GLASS_HINTS = ("glass", "curtain", "mirror")
@@ -76,6 +75,7 @@ def attribution(textures: list[dict], sources: dict, project_noncommercial: bool
 
     A texture whose source is missing, not allowed to be used as texture, or whose licence needs an author but has none
     is an error. A licence that is not allowed in this project (CC BY-NC in a commercial one) is an error too."""
+    from ..textures import licence_allows     # imported here: the Blender builder must not need PIL
     out, errs = {}, []
     for t in textures:
         tid = t.get("id", t.get("file", "?"))
@@ -101,3 +101,24 @@ def attribution(textures: list[dict], sources: dict, project_noncommercial: bool
         out[tid] = {"source_id": sid, "licence": lic, "author": src.get("author", ""),
                     "title": src.get("title") or src.get("path", "")}
     return out, errs
+
+
+def architectural_warnings(spec: dict) -> list[str]:
+    """Walls and roofs must not be metallic. Metal trim, bronze details and glass are allowed. Only the materials a part
+    actually uses as wall or roof are checked, so a metal ornament does not trip the rule. Reported as warnings: a dev
+    project with an existing finish keeps building, and the warning names what to fix."""
+    mats = spec.get("materials") or {}
+    out = []
+    seen = set()
+    for part in spec.get("parts", []):
+        pm = part.get("material") or {}
+        for slot in ("wall", "roof"):
+            name = pm.get(slot, slot)
+            if name in seen or name not in mats or is_glass(name):
+                continue
+            seen.add(name)
+            met = mats[name].get("metallic", 0.0)
+            if isinstance(met, (int, float)) and met > ARCH_MAX_METALLIC:
+                out.append(f"{name} is used as {slot} of {part.get('id')} but metallic is {met} "
+                           f"(architectural surfaces should stay at or below {ARCH_MAX_METALLIC})")
+    return out
