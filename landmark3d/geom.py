@@ -891,7 +891,7 @@ def facade_runs(poly, max_turn_deg: float = RUN_TURN_DEG):
 
 
 SIDE_KEYS = ("opening_type", "bay_spacing", "opening_width", "opening_height", "sill", "pediment", "awning",
-             "awning_depth", "pilasters", "floors", "ground")     # what one wall or wall segment may set for itself
+             "awning_depth", "pilasters", "floors", "ground", "level_height")     # what one wall or wall segment may set for itself
 
 
 def _slice_run(run, s0, s1):
@@ -966,6 +966,8 @@ def facade_layout(poly, base_z, top_z, facade):
         else:
             ent_run = max(range(len(runs)), key=lambda k: runs[k]["L"])
     for ri, (run, fac) in enumerate(pieces):
+        lh = float(fac.get("level_height", level_h))          # a wall may have its own floor height (M3 grid)
+        lv_n = max(1, int((top_z - base_z - cor + 0.3) // lh))
         bay = max(1.0, float(fac.get("bay_spacing", 4.0)))
         pl = fac.get("pilasters")
         pl = (pl if isinstance(pl, dict) else {}) if pl else None
@@ -990,7 +992,7 @@ def facade_layout(poly, base_z, top_z, facade):
             ent_bays = set(range(first, first + k))
             span = k * b
             w = min(float(ent.get("width", 6.0)), span - pil_w - 2 * PILASTER_GAP)
-            h = min(float(ent.get("height", level_h * 1.6)), top_z - base_z - cor - 0.8)
+            h = min(float(ent.get("height", lh * 1.6)), top_z - base_z - cor - 0.8)
             if w >= 1.0 and h >= 2.0:
                 p_, t_, o_ = _point_at(run["edges"], (first + k / 2) * b)
                 ent_top = base_z + h + 0.6
@@ -1011,7 +1013,7 @@ def facade_layout(poly, base_z, top_z, facade):
                                          "pt": _point_at(run["edges"], min(max(s_, 1e-6), run["L"] - 1e-6))})
         # windows at bay centres
         clear = b - pil_w - 2 * PILASTER_GAP
-        for lv in range(levels):
+        for lv in range(lv_n):
             rule = next((r for r in rules if int(r.get("from", 0)) <= lv <= int(r.get("to", r.get("from", 0)))), None)
             kind = (rule or {}).get("opening_type") or fac.get("opening_type", "rect")
             if kind == "none":
@@ -1020,19 +1022,19 @@ def facade_layout(poly, base_z, top_z, facade):
             every =max(1, int(round(float(src.get("bay_spacing", bay)) / bay))) if src.get("bay_spacing") else 1
             if kind == "storefront":
                 w = float(src.get("opening_width", b * 0.8))
-                h = float(src.get("opening_height", level_h * 0.8))
+                h = float(src.get("opening_height", lh * 0.8))
                 sill = float(src.get("sill", 0.05))
             else:
                 w = float(src.get("opening_width", b * 0.45))
-                h = float(src.get("opening_height", w if kind == "square" else min(2.4, level_h * 0.62)))
+                h = float(src.get("opening_height", w if kind == "square" else min(2.4, lh * 0.62)))
                 sill = float(src.get("sill", 0.15 if lv == 0 else 0.9))
             if kind == "square":
                 h = w
             if w > clear:
                 out["issues"].append(f"floor {lv}: opening width {w:g} m > clear bay {clear:.2f} m - narrowed")
                 w = clear
-            z_floor = base_z + lv * level_h
-            ceiling = min(z_floor + level_h - (0.3 if bands else 0.15), top_z - cor - 0.2)
+            z_floor = base_z + lv * lh
+            ceiling = min(z_floor + lh - (0.3 if bands else 0.15), top_z - cor - 0.2)
             pediment, awning = bool(src.get("pediment")), bool(src.get("awning"))
             head = 0.55 if pediment else (0.5 if awning else 0.0)
             z0 = z_floor + sill

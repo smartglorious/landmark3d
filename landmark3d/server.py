@@ -497,6 +497,7 @@ def observation_review(pid: str):
         mine = [o for o in obs_doc["observations"] if sid and str(o.get("id", "")).split("/")[0] == sid]
         photos.append({"path": rel, "source_id": sid,
                        "part": corr.get("photo_parts", {}).get(sid) if sid else None,
+                       "side": corr.get("photo_sides", {}).get(sid) if sid else None,
                        "observations": [{"confidence": o.get("confidence"), "floors": len(o.get("floor_lines", [])) - 1,
                                          "bays": len(o.get("bay_lines", [])) - 1} for o in mine]})
     return {"ai_enabled": bool(settings_mod.load().get("facade_observations", False)),
@@ -513,7 +514,8 @@ def put_observation_corrections(pid: str, body: dict = Body(...)):
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         raise HTTPException(409, "no plan yet: build the plan first")
-    doc = {"parts": body.get("parts", {}), "photo_parts": body.get("photo_parts", {})}
+    doc = {"parts": body.get("parts", {}), "photo_parts": body.get("photo_parts", {}),
+           "photo_sides": body.get("photo_sides", {})}
     part_ids = {p["id"] for p in spec["parts"]}
     errors = corr_mod.save(prj, doc, part_ids)
     if errors:

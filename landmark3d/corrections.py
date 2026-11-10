@@ -39,10 +39,37 @@ def validate(doc, parts: set) -> list[str]:
                 errors.append(f"{pid}.floor_types: element type must be a short name")
         if "side" in c and (not isinstance(c["side"], int) or isinstance(c["side"], bool) or c["side"] < 0):
             errors.append(f"{pid}.side: must be an outline edge index (0 or more)")
+        grids = c.get("grids", [])
+        if not isinstance(grids, list):
+            errors.append(f"{pid}.grids: must be a list")
+            grids = []
+        seen = set()
+        for g in grids:
+            side = g.get("side") if isinstance(g, dict) else None
+            if not _is_index(side):
+                errors.append(f"{pid}.grids: each grid needs a side (an outline edge index)")
+                continue
+            if side in seen:
+                errors.append(f"{pid}.grids: side {side} is given twice")
+            seen.add(side)
+            for key in ("floor_lines", "bay_lines"):
+                if key in g:
+                    vals = g[key]
+                    if not isinstance(vals, list) or len(vals) < 2 or not all(finite_unit(v) for v in vals):
+                        errors.append(f"{pid}.grids[{side}].{key}: needs at least two values in [0, 1]")
+                    elif not _ascending(vals):
+                        errors.append(f"{pid}.grids[{side}].{key}: lines must be strictly ascending")
     for source, pid in (doc.get("photo_parts") or {}).items():
         if pid not in parts:
             errors.append(f"photo {source}: assigned to no such part {pid!r}")
+    for source, side in (doc.get("photo_sides") or {}).items():
+        if not _is_index(side):
+            errors.append(f"photo {source}: the side must be an outline edge index (0 or more)")
     return errors
+
+
+def _is_index(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
 def load(prj) -> dict:
