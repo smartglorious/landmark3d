@@ -465,6 +465,94 @@ def put_spec(pid: str, body: dict = Body(...)):
     return {"ok": True, "estimated_triangles": sp["estimated_triangles"], "issues": sp["issues"]}
 
 
+def _photo_sources(prj: Project) -> dict:
+    return {s["id"]: s for s in prj.read_json("input/sources.json", {"sources": []})["sources"]}
+
+
+@app.get("/api/projects/{pid}/observation_review")
+def observation_review(pid: str):
+    """What A2 needs for the facade step: each facade part with its outline sides, each photo with its part, the
+    observations per photo, and the grid the build will use."""
+    from . import corrections as corr_mod, facade_grid, observe as observe_mod
+    prj = _prj(pid)
+    spec = prj.read_json("spec/landmark_spec.json")
+    if not spec:
+        raise HTTPException(409, "no plan yet: build the plan first")
+    main = [tuple(p) for p in spec["footprint"]["local"]]
+    from . import geom
+    corr = corr_mod.load(prj)
+    parts = []
+    for part in spec["parts"]:
+        if not part.get("facade"):
+            continue
+        poly = geom.footprint_polygon(part["footprint"], main)
+        parts.append({"id": part["id"], "sides": facade_grid.sides(poly), "correction": corr["parts"].get(part["id"], {}),
+                      "observed_grid": part.get("observed_grid")})
+    sources = _photo_sources(prj)
+    obs_doc = observe_mod.load(prj) or {"observations": []}
+    photos = []
+    for rel in spec.get("photos", []):
+        src = next((s for s in sources.values() if s.get("path") == rel and s.get("kind") == "photo"), None)
+        sid = src["id"] if src else None
+        mine = [o for o in obs_doc["observations"] if sid and str(o.get("id", "")).split("/")[0] == sid]
+        photos.append({"path": rel, "source_id": sid,
+                       "part": corr.get("photo_parts", {}).get(sid) if sid else None,
+                       "observations": [{"confidence": o.get("confidence"), "floors": len(o.get("floor_lines", [])) - 1,
+                                         "bays": len(o.get("bay_lines", [])) - 1} for o in mine]})
+    return {"ai_enabled": bool(settings_mod.load().get("facade_observations", False)),
+            "parts": parts, "photos": photos, "part_ids": [p["id"] for p in spec["parts"]],
+            "grid_report": spec.get("observed_grid")}
+
+
+@app.put("/api/projects/{pid}/observation_corrections")
+def put_observation_corrections(pid: str, body: dict = Body(...)):
+    """Save what the person set at A2 (sides, floor and bay lines, photo-to-part), then redo the grid from them."""
+    from . import corrections as corr_mod, facade_grid, observe as observe_mod
+    prj = _prj(pid)
+    _refuse_if_running(pid)
+    spec = prj.read_json("spec/landmark_spec.json")
+    if not spec:
+        raise HTTPException(409, "no plan yet: build the plan first")
+    doc = {"parts": body.get("parts", {}), "photo_parts": body.get("photo_parts", {})}
+    part_ids = {p["id"] for p in spec["parts"]}
+    errors = corr_mod.save(prj, doc, part_ids)
+    if errors:
+        raise HTTPException(400, "; ".join(errors[:6]))
+    obs = (observe_mod.load(prj) or {"observations": []})["observations"]
+    report = facade_grid.reapply(spec, obs, doc)
+    prj.write_json("spec/landmark_spec.json", spec)
+    prj.log("observation corrections saved")
+    pipeline.invalidate_from(prj, "spec_review", "facade corrections changed: approve the plan again")
+    return {"ok": True, "grid": report}
+
+
+@app.post("/api/projects/{pid}/observations/run")
+def run_observations(pid: str):
+    """Ask the AI to read the photos of this project (A2 button). Uses the photo-to-part choices already saved."""
+    from . import corrections as corr_mod, facade_grid, observe as observe_mod
+    prj = _prj(pid)
+    _refuse_if_running(pid)
+    if not settings_mod.load().get("facade_observations", False):
+        raise HTTPException(409, "turn on facade observations in Settings first")
+    spec = prj.read_json("spec/landmark_spec.json")
+    if not spec or not spec.get("photos"):
+        raise HTTPException(409, "no photos in this plan")
+    provider = ai.get("research")
+    if provider is None:
+        raise HTTPException(409, "no AI provider is available (sign in to the AI in Connections)")
+    sources = _photo_sources(prj)
+    corr = corr_mod.load(prj)
+    part_for = {sid: pid_ for sid, pid_ in corr.get("photo_parts", {}).items()}
+    log, errors = observe_mod.run_for_photos(prj, provider, spec["name"], spec["photos"], sources,
+                                             {p["id"] for p in spec["parts"]}, part_for=part_for)
+    obs = (observe_mod.load(prj) or {"observations": []})["observations"]
+    report = facade_grid.reapply(spec, obs, corr)
+    prj.write_json("spec/landmark_spec.json", spec)
+    prj.log("facade observations run from A2")
+    pipeline.invalidate_from(prj, "spec_review", "facade observations changed: approve the plan again")
+    return {"log": log, "errors": errors, "grid": report}
+
+
 @app.put("/api/projects/{pid}/budgets")
 def put_budgets(pid: str, body: dict = Body(...)):
     prj = _prj(pid)

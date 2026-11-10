@@ -32,7 +32,7 @@ def test_one_confident_photo_sets_floor_height_and_bay_width_on_the_longest_side
     grid = parts[0]["observed_grid"]
     assert grid["floors"] == 4 and grid["bays"] == 4
     assert grid["before"] == {"level_height": 3.5, "bay_spacing": 4.0}
-    assert "longest outline side" in grid["assumption"]
+    assert grid["side_chosen_by"] == "longest_side"
 
 
 def test_no_observation_leaves_the_facade_alone_and_says_why():
@@ -76,3 +76,45 @@ def test_the_cornice_is_taken_off_the_height_before_the_floor_count():
     parts = [_part(height=12.0, cornice=1.0)]
     facade_grid.apply(parts, MAIN, [_obs("OBS-1")], {"parts": {}})
     assert parts[0]["facade"]["level_height"] == pytest.approx(11.0 / 4)
+
+
+def test_sides_report_length_and_outward_facing():
+    ss = facade_grid.sides(MAIN)
+    assert [s["length_m"] for s in ss] == [20.0, 10.0, 20.0, 10.0]
+    # MAIN runs counter-clockwise: the edge from (0,0) to (20,0) faces south (-y, 270 degrees)
+    assert ss[0]["facing_deg"] == pytest.approx(270.0)
+    assert ss[1]["facing_deg"] == pytest.approx(0.0)              # the east edge faces +x
+
+
+def test_a_chosen_side_sets_the_bay_width_and_is_recorded_as_the_person_s_choice():
+    parts = [_part()]
+    corr = {"parts": {"hall": {"side": 1}}}                      # the 10 m east side
+    rep = facade_grid.apply(parts, MAIN, [_obs("OBS-1")], corr)
+    assert rep[0]["applied"] is True
+    assert parts[0]["facade"]["bay_spacing"] == pytest.approx(10.0 / 4)
+    assert parts[0]["observed_grid"]["side_chosen_by"] == "person"
+    assert parts[0]["observed_grid"]["side_index"] == 1
+
+
+def test_a_side_that_is_not_an_edge_is_refused():
+    parts = [_part()]
+    rep = facade_grid.apply(parts, MAIN, [_obs("OBS-1")], {"parts": {"hall": {"side": 9}}})
+    assert rep[0]["applied"] is False and "not an outline edge" in rep[0]["reason"]
+
+
+def test_a_photo_reassigned_to_another_part_feeds_that_part():
+    parts = [_part("hall"), _part("tower")]
+    obs = [_obs("SRC-1/OBS-1", part="hall")]                    # the AI attached the photo to the hall
+    corr = {"parts": {}, "photo_parts": {"SRC-1": "tower"}}
+    rep = {r["part"]: r for r in facade_grid.apply(parts, MAIN, obs, corr)}
+    assert rep["tower"]["applied"] is True
+    assert rep["hall"]["applied"] is False and "no usable observation" in rep["hall"]["reason"]
+
+
+def test_reapply_undoes_the_old_grid_before_applying_the_new_choice():
+    spec = {"footprint": {"local": MAIN}, "parts": [_part()]}
+    facade_grid.apply(spec["parts"], MAIN, [_obs("OBS-1")], {"parts": {}})
+    assert spec["parts"][0]["facade"]["bay_spacing"] == pytest.approx(5.0)
+    facade_grid.reapply(spec, [_obs("OBS-1")], {"parts": {"hall": {"side": 1}}})
+    assert spec["parts"][0]["facade"]["bay_spacing"] == pytest.approx(2.5)
+    assert spec["parts"][0]["observed_grid"]["before"] == {"level_height": 3.5, "bay_spacing": 4.0}

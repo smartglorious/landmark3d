@@ -37,6 +37,11 @@ def validate(doc, parts: set) -> list[str]:
                 errors.append(f"{pid}.floor_types: floor {floor!r} is not a floor index")
             if not isinstance(t, str) or not 1 <= len(t) <= 40:
                 errors.append(f"{pid}.floor_types: element type must be a short name")
+        if "side" in c and (not isinstance(c["side"], int) or isinstance(c["side"], bool) or c["side"] < 0):
+            errors.append(f"{pid}.side: must be an outline edge index (0 or more)")
+    for source, pid in (doc.get("photo_parts") or {}).items():
+        if pid not in parts:
+            errors.append(f"photo {source}: assigned to no such part {pid!r}")
     return errors
 
 

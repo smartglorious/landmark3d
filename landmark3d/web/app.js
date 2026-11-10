@@ -387,7 +387,8 @@ function renderApproval(stage, id, cur, d) {
         <p><b>${r.step === 'viewpoints' ? 'Nhận diện góc chụp (A–H)' : r.step === 'select' ? 'Chọn phương án tốt nhất' : r.step === 'facade' ? 'Mặt đứng & chi tiết (AI)' : 'Vòng ' + r.round}</b>: ${r.verdict === 'match' ? '<span class="okc">khớp</span>' : esc(r.verdict || r.result || '')}
         ${(r.differences || []).length ? `<ul>${r.differences.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</p>
         <div class="row">${(r.images || []).map(im => `<a href="/files/${id}/${esc(im)}" target="_blank"><img src="/files/${id}/${esc(im)}" style="max-width:420px;border:1px solid var(--line);border-radius:4px"></a>`).join('')}</div>`).join('')}` : ''}
-      ${(sp.observations || []).length ? `<h3>Quan sát mặt đứng (AI, từng ảnh)</h3><ul>${sp.observations.map(o => `<li>${esc(o.photo)}: ${esc(o.result)}${o.observations ? ` (${esc(String(o.observations))} quan sát)` : ''}</li>`).join('')}</ul><p class="muted">Quan sát chỉ kiểm tra lưới ô; chưa dùng để dựng hình học. Gán ảnh với khối sẽ làm ở bước sau.</p>` : ''}
+      ${(sp.observations || []).length ? `<h3>Quan sát mặt đứng (AI, từng ảnh)</h3><ul>${sp.observations.map(o => `<li>${esc(o.photo)}: ${esc(o.result)}${o.observations ? ` (${esc(String(o.observations))} quan sát)` : ''}</li>`).join('')}</ul>` : ''}
+      <h3>Mặt đứng: chọn cạnh, sửa lưới, gán ảnh</h3><div id="facade-review"><p class="muted">Đang tải…</p></div>
       <details><summary>Sửa spec (JSON)</summary><textarea id="spec-json" rows="18">${esc(JSON.stringify(sp, null, 2))}</textarea>
       <button id="spec-save">Lưu spec</button> <span id="spec-msg"></span></details>`;
   } else {
@@ -405,6 +406,76 @@ function renderApproval(stage, id, cur, d) {
     catch (e) { document.getElementById('spec-msg').textContent = e.message; }
   };
   bindApproval(id, cur.id);
+  if (cur.id === 'spec_review') loadFacadeReview(id);
+}
+
+// A2: facade step. The person picks the photographed side, edits floor/bay lines, assigns photos to parts, and can ask
+// the AI to read the photos. Everything goes through the server, which validates it and redoes the grid.
+function parseLines(text) {
+  const parts = String(text || '').split(',').map(x => x.trim()).filter(x => x !== '');
+  if (!parts.length) return null;
+  const nums = parts.map(Number);
+  if (nums.some(n => !Number.isFinite(n))) throw new Error('Đường lưới phải là các số, cách nhau bằng dấu phẩy');
+  return nums;
+}
+
+async function loadFacadeReview(id) {
+  const el = document.getElementById('facade-review');
+  if (!el) return;
+  let r;
+  try { r = await api('GET', `/api/projects/${id}/observation_review`); }
+  catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const partOpts = (sel) => `<option value="">— chưa gán —</option>${r.part_ids.map(p => `<option value="${esc(p)}" ${p === sel ? 'selected' : ''}>${esc(p)}</option>`).join('')}`;
+  const photos = r.photos.length ? r.photos.map((ph, i) => `
+    <tr><td>${esc(ph.path.split('/').pop())}</td>
+      <td><select data-photo="${esc(ph.source_id || '')}" ${ph.source_id ? '' : 'disabled'}>${partOpts(ph.part)}</select></td>
+      <td class="muted">${ph.observations.length ? ph.observations.map(o => `${o.floors} tầng × ${o.bays} ô (${Math.round((o.confidence || 0) * 100)}%)`).join('; ') : 'chưa có quan sát'}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="muted">Không có ảnh trong kế hoạch.</td></tr>';
+  const parts = r.parts.map(p => {
+    const c = p.correction || {};
+    const sideOpts = `<option value="">cạnh dài nhất (mặc định)</option>` + p.sides.map(s =>
+      `<option value="${s.index}" ${c.side === s.index ? 'selected' : ''}>cạnh ${s.index}: ${s.length_m} m, hướng ${s.facing_deg}°</option>`).join('');
+    const g = p.observed_grid
+      ? `<p class="muted">Đang dùng: ${p.observed_grid.floors} tầng × ${p.observed_grid.bays} ô trên cạnh ${p.observed_grid.side_index} (${p.observed_grid.side_chosen_by === 'person' ? 'người chọn' : 'cạnh dài nhất'}), ${esc(p.observed_grid.provenance)}</p>`
+      : '<p class="muted">Chưa áp lưới quan sát cho khối này.</p>';
+    return `<div class="card" style="margin:8px 0"><b>${esc(p.id)}</b>
+      <div class="row"><label>Cạnh ảnh chụp <select data-part="${esc(p.id)}" data-k="side">${sideOpts}</select></label></div>
+      <div class="row"><label>Đường tầng (0–1, tăng dần) <input data-part="${esc(p.id)}" data-k="floor_lines" value="${esc((c.floor_lines || []).join(', '))}" placeholder="0, 0.25, 0.5, 0.75, 1"></label></div>
+      <div class="row"><label>Đường ô (0–1, tăng dần) <input data-part="${esc(p.id)}" data-k="bay_lines" value="${esc((c.bay_lines || []).join(', '))}" placeholder="0, 0.2, 0.4, 0.6, 0.8, 1"></label></div>
+      ${g}</div>`;
+  }).join('');
+  el.innerHTML = `
+    ${r.ai_enabled ? '' : '<p class="muted">Đọc ảnh bằng AI đang tắt. Bật "Quan sát mặt đứng" trong Cài đặt để chạy.</p>'}
+    <table><tr><th>Ảnh</th><th>Thuộc khối</th><th>Quan sát AI</th></tr>${photos}</table>
+    ${parts}
+    <div class="row"><button id="fac-save">Lưu lựa chọn và áp lưới</button>
+      <button id="fac-run" ${r.ai_enabled ? '' : 'disabled'}>Chạy AI đọc ảnh</button> <span id="fac-msg" class="muted"></span></div>`;
+  const msg = (t, bad) => { const m = document.getElementById('fac-msg'); m.textContent = t; m.className = bad ? 'err' : 'muted'; };
+  document.getElementById('fac-save').onclick = async () => {
+    try {
+      const partsDoc = {};
+      el.querySelectorAll('[data-part]').forEach(inp => {
+        const pid = inp.dataset.part; partsDoc[pid] = partsDoc[pid] || {};
+        if (inp.dataset.k === 'side') { if (inp.value !== '') partsDoc[pid].side = Number(inp.value); }
+        else { const v = parseLines(inp.value); if (v) partsDoc[pid][inp.dataset.k] = v; }
+      });
+      const photoParts = {};
+      el.querySelectorAll('select[data-photo]').forEach(sel => { if (sel.value && sel.dataset.photo) photoParts[sel.dataset.photo] = sel.value; });
+      const res = await api('PUT', `/api/projects/${id}/observation_corrections`, { parts: partsDoc, photo_parts: photoParts });
+      const lines = (res.grid || []).map(g => g.applied ? `${g.part}: ${g.floors} tầng × ${g.bays} ô` : `${g.part}: không áp (${g.reason || g.policy})`);
+      msg(`Đã lưu. ${lines.join(' · ')}. Duyệt lại A2 sau khi sửa.`, false);
+      viewProject(id);
+    } catch (e) { msg(e.message, true); }
+  };
+  document.getElementById('fac-run').onclick = async () => {
+    msg('AI đang đọc ảnh… (có thể vài phút)', false);
+    try {
+      const res = await api('POST', `/api/projects/${id}/observations/run`, {});
+      const ok = (res.log || []).filter(x => x.result === 'accepted').length;
+      msg(`Đã đọc ${ok}/${(res.log || []).length} ảnh.${(res.errors || []).length ? ' Lỗi: ' + res.errors.join('; ') : ''}`, false);
+      viewProject(id);
+    } catch (e) { msg(e.message, true); }
+  };
 }
 
 function buildPanel(id, d) {

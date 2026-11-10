@@ -66,7 +66,8 @@ def load(prj) -> dict | None:
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
-def run_for_photos(prj, provider, name: str, photo_paths: list, sources: dict, parts: set, limit: int = 3):
+def run_for_photos(prj, provider, name: str, photo_paths: list, sources: dict, parts: set, limit: int = 3,
+                    part_for: dict | None = None):
     """Propose observations for up to `limit` photos of the project and persist the valid ones together.
 
     Returns (log, errors). The log has one entry per photo: accepted, or the reason it failed. A failed photo is never
@@ -80,7 +81,9 @@ def run_for_photos(prj, provider, name: str, photo_paths: list, sources: dict, p
         sid = next(k for k, v in sources.items() if v is src)
         # Which part a photo shows is not known yet. The observations describe the main part when there is one, else the
         # first part by name; the user corrects the assignment at A2 (not built yet). This is a stated assumption.
-        part_id = "main" if "main" in parts else sorted(parts)[0]
+        part_id = (part_for or {}).get(sid) or ("main" if "main" in parts else sorted(parts)[0])
+        if part_id not in parts:
+            part_id = "main" if "main" in parts else sorted(parts)[0]
         try:
             doc = propose(provider, name, part_id, sid, prj.root / rel, src, parts)
         except ai.AIError as exc:
