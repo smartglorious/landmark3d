@@ -8,7 +8,8 @@ from landmark3d import photogrammetry
 
 
 def _folder(tmp_path, **over):
-    cams = [{"image": f"p{i}.jpg", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "t": [0, 0, 0]}
+    # cameras whose centres are spread along x, so the health check sees a real baseline
+    cams = [{"image": f"p{i}.jpg", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "t": [-float(i), 0.0, -5.0]}
             for i in range(photogrammetry.MIN_CAMERAS)]
     m = {"adapter": "colmap", "adapter_version": "3.9", "units": "m", "cameras": cams,
          "points": "points.ply", "mesh": "mesh.ply"}
@@ -105,3 +106,23 @@ def test_an_implausible_scale_is_refused_not_guessed():
         photogrammetry.align([(0, 0, 0), (1, 1, 1000.0)], [(0, 0), (1, 1)], known_height=10.0)
     with pytest.raises(ValueError):
         photogrammetry.align([(0, 0, 5.0), (1, 1, 5.0)], [(0, 0), (1, 1)], known_height=10.0)
+
+
+def test_a_collapsed_reconstruction_is_refused(tmp_path):
+    """Cameras piled on one spot with one far away (the real failure seen on the Saigon photos): no depth, refused."""
+    folder = _folder(tmp_path)
+    cams = []
+    for i in range(9):
+        t = [-0.08, 0.04, 1.1] if i < 8 else [0.6, -0.3, -8.8]
+        cams.append({"image": f"c{i}.jpg", "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "t": [-x for x in t]})
+    m = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    m["cameras"] = cams
+    (folder / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    errs = photogrammetry.check_output(folder)
+    assert any("collapsed" in e or "degenerate" in e for e in errs), errs
+
+
+def test_a_spread_out_reconstruction_passes_the_health_check(tmp_path):
+    model = _colmap_text(tmp_path)                       # 8 cameras on a 45-degree turn, spread on a line
+    m = photogrammetry.export_manifest(model, tmp_path / "ok")
+    assert photogrammetry.camera_spread(m["cameras"]) is None

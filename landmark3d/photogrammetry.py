@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import shutil
 from pathlib import Path
 
@@ -70,12 +71,39 @@ def check_output(folder: Path) -> list[str]:
                 and isinstance(t, list) and len(t) == 3):
             errors.append(f"camera {c.get('image', '?')}: R must be 3x3 and t must have 3 values")
             break
+    if len(cams) >= MIN_CAMERAS and not errors:
+        try:
+            spread = camera_spread([c for c in cams])
+            if spread is not None:
+                errors.append(spread)
+        except (KeyError, TypeError, ZeroDivisionError):
+            errors.append("cameras cannot be read for the health check")
     name = m.get("points")
     if not name or not (folder / name).is_file():
         errors.append(f"points file {name!r} is missing")
     if m.get("mesh") and not (folder / m["mesh"]).is_file():
         errors.append(f"mesh file {m['mesh']!r} is missing")
     return errors
+
+
+COLLAPSE_SHARE = 0.5              # at least this share of the cameras must be well apart from the others
+
+
+def camera_spread(cams: list):
+    """None when the cameras spread out, else the problem. A reconstruction whose cameras sit on one spot (the usual
+    failure of incremental SfM on photos without enough overlap) has no depth and must not be used."""
+    C = camera_centres(cams)
+    far = max(math.dist(a, b) for a in C for b in C)
+    if far < 1e-9:
+        return "all cameras are at one point: the reconstruction is degenerate"
+    near = 0
+    for a in C:
+        if sum(1 for b in C if math.dist(a, b) <= 0.01 * far) > len(C) // 2:
+            near += 1
+    if near / len(C) > COLLAPSE_SHARE:
+        return (f"{near} of {len(C)} cameras sit within 1% of the spread of the others: the reconstruction collapsed "
+                f"onto one spot")
+    return None
 
 
 def _quat_to_matrix(qw, qx, qy, qz):
@@ -192,24 +220,26 @@ def camera_centres(cams: list) -> list:
     return out
 
 
-def up_axis(cams: list, points: list) -> tuple:
-    """Vertical direction of a reconstruction, from where the cameras stand: photos taken around a building lie on a
-    horizontal ring, so the smallest-variance direction of the camera centres is the vertical. The sign points up from
-    the building (cameras above the points)."""
-    C = camera_centres(cams)
-    if len(C) < 3:
+def up_axis(cams: list, points: list = None) -> tuple:
+    """Vertical direction from the cameras' own orientation: a photo taken level has its image 'up' along gravity, so
+    the average camera-up vector is the vertical. Camera positions are not used: photos taken from one side of a facade
+    stand on a plane parallel to it, and their positions say nothing about the vertical. Raises when the cameras disagree
+    (the photos are not level), so the vertical is never guessed."""
+    if len(cams) < 3:
         raise ValueError("need at least three cameras to find the vertical")
-    mean = [sum(c[i] for c in C) / len(C) for i in range(3)]
-    cov = [[sum((c[i] - mean[i]) * (c[j] - mean[j]) for c in C) / len(C) for j in range(3)] for i in range(3)]
-    vals, vecs = _eigh3(cov)
-    k = min(range(3), key=lambda i: vals[i])
-    n = [vecs[r][k] for r in range(3)]
-    norm = math.sqrt(sum(x * x for x in n))
-    n = [x / norm for x in n]
-    pm = [sum(p[i] for p in points) / len(points) for i in range(3)]
-    if sum((mean[i] - pm[i]) * n[i] for i in range(3)) < 0:
-        n = [-x for x in n]
-    return tuple(n)
+    ups = []
+    for c in cams:
+        R = c["R"]
+        up = (-R[1][0], -R[1][1], -R[1][2])        # camera y points down the image; world up is its opposite, as a row of R
+        ln = math.sqrt(sum(x * x for x in up))
+        ups.append(tuple(x / ln for x in up))
+    mean = [sum(u[i] for u in ups) / len(ups) for i in range(3)]
+    norm = math.sqrt(sum(x * x for x in mean))
+    coherence = norm
+    if coherence < 0.9:
+        raise ValueError(f"the cameras are not level (their up directions agree only {coherence:.2f}); "
+                         f"the vertical cannot be taken from them")
+    return tuple(x / norm for x in mean)
 
 
 def _apply(M, p):
@@ -291,3 +321,131 @@ def apply_transform(points: list, tr: dict) -> list:
     M = tr["matrix"]
     t = tr["translate"]
     return [tuple(_apply(M, p)[i] + t[i] for i in range(3)) for p in points]
+
+
+# ----------------------------------------------------------------------------- planes and anchors (M7 task 4)
+def upright(points: list, cams: list, known_height: float) -> tuple:
+    """Rotate a reconstruction so its vertical is z, and scale it so its robust vertical extent is the known height. No
+    yaw and no footprint check: this frame is for fitting surfaces, not for placing the building on the plan."""
+    n = up_axis(cams, points)
+    M = _rotation_from_to(n, (0.0, 0.0, 1.0))
+    rp = [_apply(M, p) for p in points]
+    h = _robust_extent([p[2] for p in rp])
+    if h <= 0:
+        raise ValueError("the reconstruction has no vertical extent")
+    s = known_height / h
+    return [(p[0] * s, p[1] * s, p[2] * s) for p in rp], s
+
+
+def _det3(m):
+    return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+
+
+def _solve3(A, b):
+    d = _det3(A)
+    if abs(d) < 1e-12:
+        return None
+    out = []
+    for c in range(3):
+        M = [[(b[r] if k == c else A[r][k]) for k in range(3)] for r in range(3)]
+        out.append(_det3(M) / d)
+    return out
+
+
+def _plane_from(p0, p1, p2):
+    u = [p1[i] - p0[i] for i in range(3)]
+    v = [p2[i] - p0[i] for i in range(3)]
+    n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+    ln = math.sqrt(sum(x * x for x in n))
+    if ln < 1e-9:
+        return None
+    n = [x / ln for x in n]
+    return n, sum(n[i] * p0[i] for i in range(3))
+
+
+def _refit(points: list):
+    """Least-squares plane of a set of points: the smallest-variance direction of their covariance."""
+    m = [sum(p[i] for p in points) / len(points) for i in range(3)]
+    cov = [[sum((p[i] - m[i]) * (p[j] - m[j]) for p in points) / len(points) for j in range(3)] for i in range(3)]
+    vals, vecs = _eigh3(cov)
+    k = min(range(3), key=lambda i: vals[i])
+    n = [vecs[r][k] for r in range(3)]
+    ln = math.sqrt(sum(x * x for x in n))
+    n = [x / ln for x in n]
+    return n, sum(n[i] * m[i] for i in range(3))
+
+
+def fit_planes(points: list, threshold: float, max_planes: int = 6, iterations: int = 400, seed: int = 0,
+               min_share: float = 0.03) -> list:
+    """Planes found by RANSAC, one after another, each refitted by least squares on its inliers. Deterministic: the
+    same points and seed always give the same planes. A plane must hold at least `min_share` of the points."""
+    rnd = random.Random(seed)
+    pool = list(points)
+    found = []
+    need = max(4, int(min_share * len(points)))
+    for _ in range(max_planes):
+        if len(pool) < need:
+            break
+        best = None
+        for _ in range(iterations):
+            trio = rnd.sample(pool, 3)
+            pl = _plane_from(*trio)
+            if pl is None:
+                continue
+            n, d = pl
+            inl = [p for p in pool if abs(n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - d) <= threshold]
+            if best is None or len(inl) > len(best):
+                best = inl
+        if best is None or len(best) < need:
+            break
+        n, d = _refit(best)
+        inl = [p for p in pool if abs(n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - d) <= threshold]
+        n, d = _refit(inl)
+        found.append({"normal": [round(x, 6) for x in n], "offset": round(d, 6), "support": len(inl),
+                      "kind": _kind(n), "points": inl})
+        keep = set(map(id, inl))
+        pool = [p for p in pool if id(p) not in keep]
+    return found
+
+
+def _kind(n) -> str:
+    nz = abs(n[2])
+    if nz > 0.8:
+        return "horizontal"
+    if nz < 0.25:
+        return "vertical"
+    return "sloped"
+
+
+def anchors(planes: list) -> list:
+    """Corner lines (two vertical planes meeting at a right-ish angle) and eave lines (a vertical plane meeting a
+    horizontal one). Each anchor is a segment spanned by the inliers of both planes along its direction."""
+    out = []
+    for i in range(len(planes)):
+        for j in range(i + 1, len(planes)):
+            a, b = planes[i], planes[j]
+            ka, kb = a["kind"], b["kind"]
+            if {ka, kb} == {"vertical"}:
+                kind = "corner"
+            elif {ka, kb} == {"vertical", "horizontal"}:
+                kind = "eave"
+            else:
+                continue
+            na, nb = a["normal"], b["normal"]
+            dot = abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2])
+            if dot > 0.3:                                    # nearly parallel: no real edge
+                continue
+            direction = [na[1] * nb[2] - na[2] * nb[1], na[2] * nb[0] - na[0] * nb[2], na[0] * nb[1] - na[1] * nb[0]]
+            dn = math.sqrt(sum(x * x for x in direction))
+            direction = [x / dn for x in direction]
+            p = _solve3([na, nb, direction], [a["offset"], b["offset"], 0.0])
+            if p is None:
+                continue
+            ts = [sum((q[k] - p[k]) * direction[k] for k in range(3)) for q in a["points"] + b["points"]]
+            t0, t1 = min(ts), max(ts)
+            p0 = [p[k] + direction[k] * t0 for k in range(3)]
+            p1 = [p[k] + direction[k] * t1 for k in range(3)]
+            out.append({"type": kind, "planes": [i, j], "p0": [round(x, 4) for x in p0],
+                        "p1": [round(x, 4) for x in p1], "length": round(t1 - t0, 4)})
+    return out
