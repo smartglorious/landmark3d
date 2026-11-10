@@ -329,6 +329,12 @@ def build_spec(prj: Project) -> dict:
         "views": photo_views_out,
         "observations": observation_log,            # empty unless the facade_observations setting is on
     }
+    if settings_mod.load().get("facade_observations", False):
+        # M3: the observed floor and bay grid, with the person's corrections, feeds the facade of each part.
+        from . import facade_grid, corrections as corr_mod
+        from . import observe as observe_mod
+        saved_obs = (observe_mod.load(prj) or {}).get("observations", [])
+        spec["observed_grid"] = facade_grid.apply(spec["parts"], main, saved_obs, corr_mod.load(prj))
     errs = spec_mod.validate_massing({"parts": spec["parts"], "materials": spec["materials"]})
     if errs:
         raise RuntimeError("spec invalid: " + "; ".join(errs[:5]))
