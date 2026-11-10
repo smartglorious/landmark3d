@@ -41,21 +41,35 @@ def _zones(by_floor: dict[int, str], floors: int) -> list[dict]:
     return zones
 
 
-def compile_run(observations: list[dict], part_id: str, run_no: int, facade_length_m: float) -> dict:
-    """One facade run from the usable observations of one part. Raises when there is nothing usable."""
+def compile_run(observations: list[dict], part_id: str, run_no: int, facade_length_m: float,
+                correction: dict | None = None) -> dict:
+    """One facade run from the usable observations of one part, with the person's correction (if any) applied.
+
+    A correction (floor_lines, bay_lines, floor_types) is a decision by a person and wins over the AI for this part.
+    Without any usable observation, a correction with both floor and bay lines is enough to compile a run."""
+    corr = correction or {}
     obs = usable(observations, part_id)
-    if not obs:
+    if not obs and not (corr.get("floor_lines") and corr.get("bay_lines")):
         raise ValueError(f"no usable observation for part {part_id}")
-    merged, conflicts = obs_mod.merge(obs)
-    best = max(obs, key=lambda o: (o["confidence"], o["id"]))
-    bays = len(best["bay_lines"]) - 1
-    floors = len(best["floor_lines"]) - 1
+    if obs:
+        merged, conflicts = obs_mod.merge(obs)
+        best = max(obs, key=lambda o: (o["confidence"], o["id"]))
+        floor_lines, bay_lines = best["floor_lines"], best["bay_lines"]
+    else:
+        merged, conflicts = [], []
+        floor_lines, bay_lines = [], []
+    floor_lines = corr.get("floor_lines") or floor_lines
+    bay_lines = corr.get("bay_lines") or bay_lines
+    bays = len(bay_lines) - 1
+    floors = len(floor_lines) - 1
     if bays < 1 or floors < 1 or facade_length_m <= 0:
         raise ValueError("an observation needs at least one bay, one floor and a facade length")
     typed: dict[int, list[tuple[str, float]]] = {}
     for el in merged:
         typed.setdefault(el["floor"], []).append((el["type"], el["confidence"]))
     by_floor = {f: _dominant(v) for f, v in typed.items()}
+    for f, t in (corr.get("floor_types") or {}).items():
+        by_floor[int(f)] = t                                  # a person chose this floor's element type
     # mirror symmetry: the repeated elements sit at the same floors and mirrored bay indexes
     cells = {(el["floor"], el["bay"]) for el in merged if el["type"] not in PORTAL_TYPES}
     mirrored = {(f, bays - 1 - b) for f, b in cells}
@@ -66,14 +80,17 @@ def compile_run(observations: list[dict], part_id: str, run_no: int, facade_leng
             x0, _, x1, _ = el["bbox"]
             overrides.append({"floor": el["floor"], "bay": el["bay"], "module": "entrance_portal",
                               "params": {"width_m": round((x1 - x0) * facade_length_m, 2)}})
-    confidence = round(sum(o["confidence"] for o in obs) / len(obs), 4)
+    confidence = round(sum(o["confidence"] for o in obs) / len(obs), 4) if obs else 1.0
+    evidence = sorted({o["id"] for o in obs})
+    if corr:
+        evidence.append("USER-CORRECTION")
     return {
         "run": run_no,
         "grammar": {"floor_zones": _zones(by_floor, floors), "bay_count": bays,
                     "bay_width_m": round(facade_length_m / bays, 4), "symmetry": symmetry},
         "overrides": overrides,
-        "evidence": sorted({o["id"] for o in obs}),
-        "provenance": "observed",
+        "evidence": evidence,
+        "provenance": "user_corrected" if corr else "observed",
         "confidence": confidence,
         "conflicts": conflicts,
     }

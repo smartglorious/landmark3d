@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-PROVENANCE_KINDS = ("observed", "symmetry", "style_inferred", "source_data", "default")
+PROVENANCE_KINDS = ("observed", "user_corrected", "symmetry", "style_inferred", "source_data", "default")
 DEFAULT_CONFIDENCE_CAP = 0.5          # plan 8.2: a default may not receive a confidence above 0.5
 
 
