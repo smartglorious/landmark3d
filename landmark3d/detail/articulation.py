@@ -305,3 +305,111 @@ def _register_finial():
 
 
 _register_finial()
+
+
+# ----------------------------------------------------------------------------- M4 remaining planned slices
+def stepped_cornice(params):
+    """A stepped cornice: stacked bands under the roof line, the lowest projecting most and each tier above it less.
+
+    Tiers stand from z (the roof line) upward, each `tier_height` tall. Tier k projects proj * (tiers - k) / tiers, so a
+    two-tier cornice is a wide block with a narrower one on top, as in classical work."""
+    poly = params["poly"]
+    z = float(params.get("base_z", 0.0)) + float(params.get("z", 0.0))
+    proj = float(params.get("projection", 0.5))
+    tiers = int(params.get("tiers", 2))
+    tier_h = float(params.get("tier_height", 0.25))
+    if not 1 <= tiers <= 4:
+        raise ValueError("a stepped cornice has 1 to 4 tiers")
+    if not 0.1 <= proj <= 1.5:
+        raise ValueError("cornice projection must be 0.1 to 1.5 m")
+    if not 0.12 <= tier_h <= 0.6:
+        raise ValueError("cornice tier height must be 0.12 to 0.6 m")
+    m = geom.Mesh()
+    for k in range(tiers):
+        p = proj * (tiers - k) / tiers
+        geom.band(poly, z + k * tier_h, z + (k + 1) * tier_h, p, m, "trim", caps=(k == tiers - 1))
+    return _component(m, {"top": (z + tiers * tier_h)})
+
+
+def column_row(params):
+    """A row of round columns on one face, `count` columns evenly spaced, each an 8-sided shaft from base_z to top."""
+    origin, t, o, ln = _face_frame(params["poly"], float(params.get("facing_deg", 270)), float(params.get("offset", 0.0)))
+    z0 = float(params.get("base_z", 0.0)) + float(params.get("z", 0.0))
+    height = max(0.5, float(params.get("height", 5.0)))
+    diam = max(0.2, float(params.get("column_diameter", 0.7)))
+    count = max(2, int(params.get("count", 4)))
+    spacing = max(diam * 1.2, float(params.get("spacing", 2.0)))
+    proj = max(0.05, float(params.get("projection", 0.3)))
+    span = (count - 1) * spacing + diam
+    if span > ln - 0.2:
+        raise ValueError(f"column row needs {span:.2f} m but the face is {ln:.2f} m long")
+    at = _frame_at(origin, t, o)
+    m = geom.Mesh()
+    n = 8
+    r = diam / 2
+    for i in range(count):
+        cu = -span / 2 + diam / 2 + i * spacing
+        ring0 = [(cu + r * math.cos(2 * math.pi * k / n), proj + r * math.sin(2 * math.pi * k / n)) for k in range(n)]
+        for k in range(n):
+            j = (k + 1) % n
+            quad = [(ring0[k][0], ring0[k][1], z0), (ring0[j][0], ring0[j][1], z0),
+                    (ring0[j][0], ring0[j][1], z0 + height), (ring0[k][0], ring0[k][1], z0 + height)]
+            m.f([m.v(*at(u, v, zz)) for u, v, zz in quad], "trim")
+        top = [m.v(*at(u, v, z0 + height)) for u, v in ring0]
+        centre = m.v(*at(cu, proj, z0 + height))
+        for k in range(n):
+            m.f([top[k], top[(k + 1) % n], centre], "trim")
+    return _component(m, {"first": (origin[0] - t[0] * span / 2, origin[1] - t[1] * span / 2)})
+
+
+def entrance_portal(params):
+    """An entrance portal: a projecting surround around a recessed door opening on one face."""
+    origin, t, o, ln = _face_frame(params["poly"], float(params.get("facing_deg", 270)), float(params.get("offset", 0.0)))
+    z0 = float(params.get("base_z", 0.0)) + float(params.get("z", 0.0))
+    w = max(1.0, float(params.get("width", 6.0)))
+    h = max(2.0, float(params.get("height", 6.0)))
+    frame = max(0.1, float(params.get("frame", 0.4)))
+    proj = max(0.05, float(params.get("projection", 0.3)))
+    recess = max(0.05, float(params.get("recess", 0.5)))
+    if w + 2 * frame > ln - 0.2:
+        raise ValueError("portal does not fit on the face")
+    at = _frame_at(origin, t, o)
+    m = geom.Mesh()
+    hw = w / 2
+    geom._solid(m, at, -hw - frame, -hw, 0.0, proj, z0, z0 + h + frame, "trim")            # left jamb
+    geom._solid(m, at, hw, hw + frame, 0.0, proj, z0, z0 + h + frame, "trim")              # right jamb
+    geom._solid(m, at, -hw - frame, hw + frame, 0.0, proj, z0 + h, z0 + h + frame, "trim")  # head
+    geom._solid(m, at, -hw, hw, 0.0, recess, z0, z0 + h, "opening", bottom=False)          # the recessed door
+    comp = _component(m, {"door": (origin[0], origin[1], z0)})
+    comp.material_slots = {"trim", "opening"}
+    return comp
+
+
+def curtain_wall_bay(params):
+    """One bay of curtain wall on a face: a glazed panel framed by mullions and transoms, glass as the opening slot."""
+    origin, t, o, ln = _face_frame(params["poly"], float(params.get("facing_deg", 270)), float(params.get("offset", 0.0)))
+    z0 = float(params.get("base_z", 0.0)) + float(params.get("z", 0.0))
+    bay = min(max(0.8, float(params.get("bay", 1.5))), ln - 0.2)
+    height = max(1.5, float(params.get("height", 3.6)))
+    mull = max(0.03, float(params.get("mullion", 0.08)))
+    proj = max(0.03, float(params.get("projection", 0.1)))
+    at = _frame_at(origin, t, o)
+    m = geom.Mesh()
+    hw = bay / 2
+    geom._solid(m, at, -hw, -hw + mull, 0.0, proj, z0, z0 + height, "trim")               # mullions
+    geom._solid(m, at, hw - mull, hw, 0.0, proj, z0, z0 + height, "trim")
+    geom._solid(m, at, -hw, hw, 0.0, proj, z0 + height - mull, z0 + height, "trim")        # head transom
+    geom._solid(m, at, -hw, hw, 0.0, proj, z0, z0 + mull, "trim")                          # sill transom
+    geom._solid(m, at, -hw + mull, hw - mull, proj * 0.4, proj * 0.4, z0 + mull, z0 + height - mull, "opening", bottom=False)
+    comp = _component(m, {"centre": (origin[0], origin[1], z0 + height / 2)})
+    comp.material_slots = {"trim", "opening"}                                                 # glass is the opening slot
+    return comp
+
+
+def _register_remaining():
+    from . import registry
+    registry.GENERATORS.update({"stepped_cornice": stepped_cornice, "column_row": column_row,
+                                "entrance_portal": entrance_portal, "curtain_wall_bay": curtain_wall_bay})
+
+
+_register_remaining()

@@ -104,7 +104,7 @@
     },
     {
       "id": "entrance_portal",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "opening_assembly",
       "milestone": "M2",
       "style_tags": [
@@ -129,15 +129,16 @@
         "trim",
         "opening"
       ],
-      "lods": [],
-      "planned_lods": [
-        "portal_panel",
-        "portal_recessed"
+      "lods": [
+        {
+          "level": 0,
+          "generator": "entrance_portal"
+        }
       ]
     },
     {
       "id": "curtain_wall_bay",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "curtain_wall",
       "milestone": "M2",
       "style_tags": [
@@ -155,9 +156,11 @@
         "glass",
         "trim"
       ],
-      "lods": [],
-      "planned_lods": [
-        "mullion_frame"
+      "lods": [
+        {
+          "level": 0,
+          "generator": "curtain_wall_bay"
+        }
       ]
     },
     {
@@ -196,7 +199,7 @@
     },
     {
       "id": "stepped_cornice",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "horizontal_articulation",
       "milestone": "M4",
       "style_tags": [
@@ -219,9 +222,11 @@
       "material_slots": [
         "trim"
       ],
-      "lods": [],
-      "planned_lods": [
-        "cornice_tiers"
+      "lods": [
+        {
+          "level": 0,
+          "generator": "stepped_cornice"
+        }
       ]
     },
     {
@@ -264,7 +269,7 @@
     },
     {
       "id": "colonnade_recessed",
-      "status": "planned",
+      "status": "implemented",
       "semantic_type": "vertical_articulation",
       "milestone": "M4",
       "style_tags": [
@@ -288,9 +293,13 @@
         "trim",
         "opening"
       ],
-      "lods": [],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "column_row"
+        }
+      ],
       "planned_lods": [
-        "column_row",
         "loggia_recess"
       ]
     },
