@@ -449,3 +449,86 @@ def anchors(planes: list) -> list:
             out.append({"type": kind, "planes": [i, j], "p0": [round(x, 4) for x in p0],
                         "p1": [round(x, 4) for x in p1], "length": round(t1 - t0, 4)})
     return out
+
+
+# ----------------------------------------------------------------------------- horizontal placement from walls
+def upright_frame(points: list, cams: list, known_height: float) -> tuple:
+    """Like upright(), but also returns the rotation M (before scaling) so the caller can carry planes into the same frame."""
+    n = up_axis(cams, points)
+    M = _rotation_from_to(n, (0.0, 0.0, 1.0))
+    rp = [_apply(M, p) for p in points]
+    h = _robust_extent([p[2] for p in rp])
+    if h <= 0:
+        raise ValueError("the reconstruction has no vertical extent")
+    s = known_height / h
+    return [(p[0] * s, p[1] * s, p[2] * s) for p in rp], s, M
+
+
+def dominant_wall_angle(vertical_planes: list) -> float:
+    """Direction of the building's walls, modulo 90 degrees: the support-weighted circular mean of 4*theta, so two
+    perpendicular walls agree on one angle."""
+    sx = sy = 0.0
+    for p in vertical_planes:
+        nx, ny = p["normal"][0], p["normal"][1]
+        th = math.atan2(ny, nx)
+        w = p["support"]
+        sx += w * math.sin(4 * th)
+        sy += w * math.cos(4 * th)
+    return math.atan2(sx, sy) / 4.0
+
+
+def align_from_walls(points: list, cams: list, footprint_xy: list, known_height: float,
+                     threshold: float = None, max_residual: float = 0.15) -> dict:
+    """Place a reconstruction by its walls. Vertical from the camera up vectors, scale from the known height, wall
+    direction from the fitted vertical planes, and the centre from the two opposite walls of each direction. Those
+    walls also give the size, which is compared with the footprint: a mismatch above max_residual is refused."""
+    pts, s, M = upright_frame(points, cams, known_height)
+    thr = threshold if threshold is not None else 0.02 * known_height
+    planes = fit_planes(pts, threshold=thr, max_planes=10, seed=0, min_share=0.02)
+    vert = [p for p in planes if p["kind"] == "vertical"]
+    if len(vert) < 2:
+        raise ValueError("fewer than two vertical planes: there are no walls to place the building by")
+    phi = dominant_wall_angle(vert)
+    fx = [p[0] for p in footprint_xy]
+    fy = [p[1] for p in footprint_xy]
+    fw, fd = max(fx) - min(fx), max(fy) - min(fy)
+    edges = [(footprint_xy[(i + 1) % len(footprint_xy)][0] - footprint_xy[i][0],
+              footprint_xy[(i + 1) % len(footprint_xy)][1] - footprint_xy[i][1]) for i in range(len(footprint_xy))]
+    lo = max(range(len(edges)), key=lambda i: edges[i][0] ** 2 + edges[i][1] ** 2)
+    theta_f = math.atan2(edges[lo][1], edges[lo][0])
+    base = theta_f - phi
+    best = None
+    for k in range(4):
+        a = base + k * math.pi / 2
+        c, sn = math.cos(a), math.sin(a)
+        R2 = [[c, -sn, 0.0], [sn, c, 0.0], [0.0, 0.0, 1.0]]
+        xw, yw = [], []
+        for p in planes:
+            if p["kind"] != "vertical":
+                continue
+            n2 = _apply(R2, p["normal"])
+            if abs(n2[0]) > 0.9:
+                xw.append(p["offset"] / n2[0])
+            elif abs(n2[1]) > 0.9:
+                yw.append(p["offset"] / n2[1])
+        if len(xw) < 2 or len(yw) < 2:
+            continue
+        wx, wy = max(xw) - min(xw), max(yw) - min(yw)
+        err = abs(wx - fw) / fw + abs(wy - fd) / fd
+        if best is None or err < best[0]:
+            best = (err, a, R2, xw, yw)
+    if best is None:
+        raise ValueError("the walls do not form two opposite pairs: the building cannot be placed")
+    err, a, R2, xw, yw = best
+    residual = err / 2
+    if residual > max_residual:
+        raise ValueError(f"the walls do not match the footprint (off by {residual:.0%}); check the photos")
+    cx_r, cy_r = (min(xw) + max(xw)) / 2, (min(yw) + max(yw)) / 2
+    rot = _matmul(R2, _matmul([[s, 0, 0], [0, s, 0], [0, 0, s]], M))
+    rp = [_apply(R2, p) for p in pts]
+    zlow = _pct([p[2] for p in rp], 0.02)
+    fcx, fcy = (min(fx) + max(fx)) / 2, (min(fy) + max(fy)) / 2
+    return {"matrix": [[round(v, 9) for v in row] for row in rot],
+            "translate": [round(fcx - cx_r, 6), round(fcy - cy_r, 6), round(-zlow, 6)],
+            "scale": round(s, 6), "wall_angle_deg": round(math.degrees(a), 3), "footprint_residual": round(residual, 4),
+            "walls": {"x": round(max(xw) - min(xw), 3), "y": round(max(yw) - min(yw), 3)}}

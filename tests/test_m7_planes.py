@@ -5,6 +5,8 @@ import pytest
 
 from landmark3d import photogrammetry as P
 
+H = 17.0
+
 
 def _box_points(n=1200, noise=0.02, seed=1):
     rnd = random.Random(seed)
@@ -76,3 +78,37 @@ def test_upright_scales_to_the_known_height_and_rotates_the_vertical_to_z():
     zs = [p[2] for p in up]
     assert P._robust_extent(zs) == pytest.approx(14.0, rel=0.05)
     assert scale > 0
+
+
+def test_walls_place_a_rotated_building_on_the_footprint():
+    """A 40 x 20 m box, turned 25 degrees in the plane and shifted, must come back on the footprint from its walls."""
+    import math as m
+    pts = _box_points(noise=0.02)
+    a = m.radians(25)
+    c, s = m.cos(a), m.sin(a)
+    turned = [(c * p[0] - s * p[1] + 30.0, s * p[0] + c * p[1] - 12.0, p[2]) for p in pts]
+    cams = []
+    for k in range(10):
+        ang = 2 * m.pi * k / 10
+        C = (60 * m.cos(ang), 60 * m.sin(ang), 20.0)
+        f = [-C[0], -C[1], 8.0 - C[2]]
+        fn = m.sqrt(sum(x * x for x in f))
+        f = [x / fn for x in f]
+        r = [f[1] * 1.0, -f[0] * 1.0, 0.0]
+        rn = m.sqrt(sum(x * x for x in r))
+        r = [x / rn for x in r]
+        u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]]
+        R = [r, [-x for x in u], f]
+        t = [-sum(R[i][k2] * C[k2] for k2 in range(3)) for i in range(3)]
+        cams.append({"R": R, "t": t})
+    fp = [(-20.0, -10.0), (20.0, -10.0), (20.0, 10.0), (-20.0, 10.0)]
+    tr = P.align_from_walls(turned, cams, fp, known_height=14.0)   # the box is 14 m tall (roof at 14)
+    out = P.apply_transform(turned, tr)
+    xs = [p[0] for p in out]
+    ys = [p[1] for p in out]
+    # centred: the midpoint between the 2nd and 98th percentiles is the building centre (the median is not, because the
+    # point counts on the walls and roof are not symmetric)
+    assert (P._pct(xs, 0.02) + P._pct(xs, 0.98)) / 2 == pytest.approx(0.0, abs=0.5)
+    assert (P._pct(ys, 0.02) + P._pct(ys, 0.98)) / 2 == pytest.approx(0.0, abs=0.5)
+    assert tr["walls"]["x"] == pytest.approx(40.0, rel=0.05)
+    assert tr["walls"]["y"] == pytest.approx(20.0, rel=0.05)
