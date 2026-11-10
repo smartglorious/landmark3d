@@ -1,31 +1,37 @@
 """Photogrammetry adapter contract (plan M7, tasks 2-3). Optional: without COLMAP or Meshroom the standard procedural
 workflow runs unchanged, and the status says so (no silent default, no fake reconstruction).
 
-The adapter does not run the reconstruction itself here. It defines what an external output folder must contain, checks
-it, and aligns its points to project coordinates with the footprint and a known height. Fitting planes and component
-anchors (task 4) and using dense geometry as bake source (task 5) are not implemented yet.
+The adapter does not run the reconstruction itself. It defines what an external output folder must contain, checks it,
+exports a COLMAP text model into that folder, and aligns its points to project coordinates with the footprint and a
+known height. Fitting planes and component anchors (task 4) and using dense geometry as bake source (task 5) are not
+implemented yet.
 
 Output folder contract (`manifest.json` plus the files it names):
-  {"adapter": "colmap" | "meshroom", "adapter_version": "...", "units": "m",
+  {"adapter": "colmap" | "meshroom", "adapter_version": "...", "units": "m" | "arbitrary",
    "cameras": [{"image": "name.jpg", "R": [[..3..]x3], "t": [x, y, z]}, ...],
-   "points": "points.ply", "mesh": "mesh.ply"}
+   "points": "points.ply", "mesh": "mesh.ply" (optional: a sparse result has points only)}
+"units" is "arbitrary" when the reconstruction has no metric scale (COLMAP sparse); the scale then comes from the known
+height in align(). R and t map world to camera coordinates.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
-ADAPTERS = {"colmap": "colmap", "meshroom": "meshroom_batch"}      # adapter name -> executable looked for on PATH
+TOOLS_DIR = Path(__file__).resolve().parents[1] / ".tools"      # local installs, checked by SHA-256 when installed
+ADAPTERS = {"colmap": "colmap", "meshroom": "meshroom_batch"}   # adapter name -> executable name
 MIN_CAMERAS = 8
 SCALE_RANGE = (0.2, 5.0)          # a reconstruction scaled further than this is not trusted without a person
 
 
 def detect() -> dict:
-    """Which adapters have their executable on this machine. Nothing is run."""
+    """Which adapters are installed here: a verified local install first, then PATH. Nothing is run."""
     out = {}
     for name, exe in ADAPTERS.items():
-        path = shutil.which(exe)
+        local = TOOLS_DIR / name / "bin" / (exe + ".exe" if os.name == "nt" else exe)
+        path = str(local) if local.is_file() else shutil.which(exe)
         out[name] = {"available": path is not None, "executable": exe, "path": path}
     return out
 
@@ -52,8 +58,8 @@ def check_output(folder: Path) -> list[str]:
     errors = []
     if m.get("adapter") not in ADAPTERS:
         errors.append(f"adapter must be one of {sorted(ADAPTERS)}")
-    if m.get("units") != "m":
-        errors.append("units must be metres")
+    if m.get("units") not in ("m", "arbitrary"):
+        errors.append("units must be metres or arbitrary")
     cams = m.get("cameras") or []
     if len(cams) < MIN_CAMERAS:
         errors.append(f"{len(cams)} cameras; at least {MIN_CAMERAS} are needed")
@@ -63,11 +69,47 @@ def check_output(folder: Path) -> list[str]:
                 and isinstance(t, list) and len(t) == 3):
             errors.append(f"camera {c.get('image', '?')}: R must be 3x3 and t must have 3 values")
             break
-    for key in ("points", "mesh"):
-        name = m.get(key)
-        if not name or not (folder / name).is_file():
-            errors.append(f"{key} file {name!r} is missing")
+    name = m.get("points")
+    if not name or not (folder / name).is_file():
+        errors.append(f"points file {name!r} is missing")
+    if m.get("mesh") and not (folder / m["mesh"]).is_file():
+        errors.append(f"mesh file {m['mesh']!r} is missing")
     return errors
+
+
+def _quat_to_matrix(qw, qx, qy, qz):
+    n = (qw * qw + qx * qx + qy * qy + qz * qz) ** 0.5
+    w, x, y, z = qw / n, qx / n, qy / n, qz / n
+    return [[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]]
+
+
+def export_manifest(model_dir: Path, out_dir: Path, adapter: str = "colmap", version: str = "") -> dict:
+    """Read a COLMAP model exported as text (images.txt, points3D.txt) and write the contract folder: manifest.json and
+    points.ply. COLMAP sparse output has no metric scale, so units are 'arbitrary'. Returns the manifest."""
+    model_dir, out_dir = Path(model_dir), Path(out_dir)
+    cams, pts = [], []
+    # Each image is a pose line followed by its 2D point line, which is empty when the image has no points. Empty lines
+    # are kept on purpose: dropping them shifts every pose after the first empty one.
+    lines = [ln for ln in (model_dir / "images.txt").read_text(encoding="utf-8").splitlines() if not ln.startswith("#")]
+    for i in range(0, len(lines), 2):
+        f = lines[i].split()
+        qw, qx, qy, qz, tx, ty, tz = (float(v) for v in f[1:8])
+        cams.append({"image": f[9], "R": _quat_to_matrix(qw, qx, qy, qz), "t": [tx, ty, tz]})
+    for ln in (model_dir / "points3D.txt").read_text(encoding="utf-8").splitlines():
+        if ln and not ln.startswith("#"):
+            f = ln.split()
+            pts.append((float(f[1]), float(f[2]), float(f[3])))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    header = ["ply", "format ascii 1.0", f"element vertex {len(pts)}", "property float x",
+              "property float y", "property float z", "end_header"]
+    body = header + [f"{x} {y} {z}" for x, y, z in pts]
+    (out_dir / "points.ply").write_text("\n".join(body) + "\n", encoding="utf-8")
+    manifest = {"adapter": adapter, "adapter_version": version, "units": "arbitrary", "cameras": cams,
+                "points": "points.ply"}
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    return manifest
 
 
 def align(points: list, footprint_xy: list, known_height: float) -> dict:
@@ -89,5 +131,6 @@ def align(points: list, footprint_xy: list, known_height: float) -> dict:
     fy = [p[1] for p in footprint_xy]
     src = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
     dst = ((min(fx) + max(fx)) / 2, (min(fy) + max(fy)) / 2)
-    return {"scale": round(scale, 6), "translate": [round(dst[0] - src[0] * scale, 6), round(dst[1] - src[1] * scale, 6),
-                                                    round(-min(zs) * scale, 6)]}
+    return {"scale": round(scale, 6),
+            "translate": [round(dst[0] - src[0] * scale, 6), round(dst[1] - src[1] * scale, 6),
+                          round(-min(zs) * scale, 6)]}
