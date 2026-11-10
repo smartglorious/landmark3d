@@ -67,27 +67,45 @@ def load(prj) -> dict | None:
 
 
 def run_for_photos(prj, provider, name: str, photo_paths: list, sources: dict, parts: set, limit: int = 3,
-                    part_for: dict | None = None):
+                    part_for: dict | None = None, max_workers: int = 3):
     """Propose observations for up to `limit` photos of the project and persist the valid ones together.
 
     Returns (log, errors). The log has one entry per photo: accepted, or the reason it failed. A failed photo is never
     turned into an invented observation; it is reported, so the spec can carry a warning (see pipeline.build_spec)."""
-    log, docs = [], []
+    from concurrent.futures import ThreadPoolExecutor
+    # One task per photo, run in parallel: the calls are independent and each waits on the provider, so the wall time
+    # is roughly the slowest call instead of the sum. The number of calls and the quota used are unchanged.
+    jobs = []
     for rel in photo_paths[:limit]:
         src = next((s for s in sources.values() if s.get("path") == rel and s.get("kind") == "photo"), None)
         if src is None:
-            log.append({"photo": rel, "result": "not a photo source in this project"})
+            jobs.append((rel, None, None, None, "not a photo source in this project"))
             continue
         sid = next(k for k, v in sources.items() if v is src)
         # Which part a photo shows is not known yet. The observations describe the main part when there is one, else the
-        # first part by name; the user corrects the assignment at A2 (not built yet). This is a stated assumption.
+        # first part by name; the user corrects the assignment at A2. This is a stated assumption.
         part_id = (part_for or {}).get(sid) or ("main" if "main" in parts else sorted(parts)[0])
         if part_id not in parts:
             part_id = "main" if "main" in parts else sorted(parts)[0]
+        jobs.append((rel, sid, src, part_id, None))
+
+    def work(job):
+        rel, sid, src, part_id, early = job
+        if early is not None:
+            return None, early
         try:
-            doc = propose(provider, name, part_id, sid, prj.root / rel, src, parts)
+            return propose(provider, name, part_id, sid, prj.root / rel, src, parts), None
         except ai.AIError as exc:
-            log.append({"photo": rel, "source_id": sid, "result": f"failed: {exc}"[:300]})
+            return None, f"failed: {exc}"[:300]
+
+    runnable = [j for j in jobs if j[4] is None]
+    workers = max(1, min(len(runnable), int(max_workers)))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        results = list(ex.map(work, jobs))                 # map keeps the input order, so the log stays in photo order
+    log, docs = [], []
+    for (rel, sid, src, part_id, early), (doc, err) in zip(jobs, results):
+        if err is not None:
+            log.append({"photo": rel, "source_id": sid, "result": err} if sid else {"photo": rel, "result": err})
             continue
         # Ids are scoped to their photo: two photos each answer FO-1 and FE-1, and those are different things. A
         # matching element in two photos is not assumed the same; merging across photos needs identity evidence.

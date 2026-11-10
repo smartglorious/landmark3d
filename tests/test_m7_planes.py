@@ -112,3 +112,10 @@ def test_walls_place_a_rotated_building_on_the_footprint():
     assert (P._pct(ys, 0.02) + P._pct(ys, 0.98)) / 2 == pytest.approx(0.0, abs=0.5)
     assert tr["walls"]["x"] == pytest.approx(40.0, rel=0.05)
     assert tr["walls"]["y"] == pytest.approx(20.0, rel=0.05)
+
+
+def test_density_filter_drops_isolated_points_and_keeps_dense_surfaces():
+    dense = [(0.1 * i, 0.1 * j, 0.0) for i in range(10) for j in range(10)]     # 100 points on a 1 m patch
+    stray = [(50.0, 50.0, 50.0), (-40.0, 3.0, 9.0)]
+    kept = P.density_filter(dense + stray, voxel=0.5, min_points=3)
+    assert all(p in kept for p in dense) and not any(p in kept for p in stray)

@@ -532,3 +532,17 @@ def align_from_walls(points: list, cams: list, footprint_xy: list, known_height:
             "translate": [round(fcx - cx_r, 6), round(fcy - cy_r, 6), round(-zlow, 6)],
             "scale": round(s, 6), "wall_angle_deg": round(math.degrees(a), 3), "footprint_residual": round(residual, 4),
             "walls": {"x": round(max(xw) - min(xw), 3), "y": round(max(yw) - min(yw), 3)}}
+
+
+def density_filter(points: list, voxel: float, min_points: int) -> list:
+    """Keep the points that share a voxel with at least `min_points` points. Dense stereo leaves isolated noise points
+    that tilt plane fits; real surfaces are dense, so noise is removed without a fixed distance. Deterministic."""
+    if voxel <= 0 or min_points < 1:
+        raise ValueError("voxel and min_points must be positive")
+    cells: dict = {}
+    keys = []
+    for p in points:
+        k = (math.floor(p[0] / voxel), math.floor(p[1] / voxel), math.floor(p[2] / voxel))
+        keys.append(k)
+        cells[k] = cells.get(k, 0) + 1
+    return [p for p, k in zip(points, keys) if cells[k] >= min_points]
