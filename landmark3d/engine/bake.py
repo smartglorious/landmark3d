@@ -116,18 +116,22 @@ def _decimate(ob, ratio: float) -> None:
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
-def bake_normal_part(high, part_id: str, size: int, ratio: float, extrude: float) -> tuple:
-    """Bake a tangent-space normal map from the detailed part (high) onto a decimated copy (low).
+def bake_normal_part(high, part_id: str, size: int, ratio: float, extrude: float, shipped=None) -> tuple:
+    """Bake a tangent-space normal map from a detailed source (high) onto the object that ships.
 
-    The low copy is what ships; the detail survives as the normal map. Returns (low_object, report). On failure the
-    high object is returned unchanged and the report says why, so nothing is half-applied."""
+    Default (shipped=None): the shipped object is a decimated copy of the detailed part, so the detail survives as the
+    normal map. With shipped given (task 5): the detail comes from an external mesh (a dense reconstruction) and the
+    shipped object is the procedural part itself, which is not decimated. Returns (shipped_object, report). On failure
+    the shipped object is untouched (work is done on a copy) and the report says why."""
+    base = shipped if shipped is not None else high
     high_tris = len(high.data.polygons)
-    low = high.copy()
-    low.data = high.data.copy()
-    low.name = f"{high.name}_low"
+    low = base.copy()
+    low.data = base.data.copy()
+    low.name = f"{base.name}_low"
     bpy.context.collection.objects.link(low)
     try:
-        _decimate(low, ratio)
+        if shipped is None:
+            _decimate(low, ratio)
         me = low.data
         prev_uv = me.uv_layers.active.name if me.uv_layers.active else None
         layer = me.uv_layers.get(NORMAL_UV) or me.uv_layers.new(name=NORMAL_UV)
@@ -179,7 +183,7 @@ def bake_normal_part(high, part_id: str, size: int, ratio: float, extrude: float
         _restore_uv(me, prev_uv)
     except RuntimeError as exc:
         bpy.data.objects.remove(low, do_unlink=True)
-        return high, {"part": part_id, "result": f"normal bake failed: {str(exc)[:200]}"}
+        return base, {"part": part_id, "result": f"normal bake failed: {str(exc)[:200]}"}
     px = img.pixels
     blue = px[2::4]
     covered = [v for v in blue if v > 0.0]
@@ -187,9 +191,33 @@ def bake_normal_part(high, part_id: str, size: int, ratio: float, extrude: float
               "high_triangles": high_tris, "low_triangles": len(low.data.polygons),
               "blue_mean": round(sum(covered) / len(covered), 3) if covered else 0.0}
     high.name = f"{high.name}_high"
-    bpy.data.objects.remove(high, do_unlink=True)            # the detailed copy is only the bake source
+    bpy.data.objects.remove(high, do_unlink=True)            # the detail source is only the bake source
+    if shipped is not None:
+        bpy.data.objects.remove(shipped, do_unlink=True)     # the copy replaces the original part
     low.name = low.name.replace("_low", "")
     return low, report
+
+
+def bake_from_dense(part_obj, part_id: str, dense_ply: str, matrix, size: int, extrude: float) -> tuple:
+    """Task 5: bake the normal map of a dense reconstruction (placed by `matrix`, a 4x4 list in project coordinates) onto
+    the procedural part. The dense mesh is only the source; what ships is the procedural part with the normal map."""
+    before = set(bpy.data.objects)
+    bpy.ops.wm.ply_import(filepath=dense_ply)
+    new = [o for o in bpy.data.objects if o not in before and o.type == "MESH"]
+    if not new:
+        return part_obj, {"part": part_id, "result": "dense mesh did not import"}
+    dense = new[0]
+    from mathutils import Matrix
+    dense.data.transform(Matrix(matrix))                     # into project coordinates, once
+    dense.matrix_world = Matrix.Identity(4)
+    scene = bpy.context.scene
+    scene.render.engine = "CYCLES"                           # baking needs Cycles, as in bake_parts
+    scene.cycles.device = "CPU"
+    scene.cycles.samples = 32
+    shipped, rep = bake_normal_part(dense, part_id, size, 1.0, extrude, shipped=part_obj)
+    if rep.get("result") != "baked" and dense.name in bpy.data.objects:
+        bpy.data.objects.remove(dense, do_unlink=True)       # a failed bake leaves no stray source behind
+    return shipped, rep
 
 
 def bake_normals(part_objects: list, size: int, ratio: float, extrude: float) -> tuple:
