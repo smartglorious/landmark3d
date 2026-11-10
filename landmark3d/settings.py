@@ -41,6 +41,7 @@ DEFAULTS = {
     "facade_pass": True,
     "bake_ao": False,            # M5: bake ambient occlusion per part (needs detail_engine_v2 on; Cycles, Blender)
     "ao_size": 256,
+    "generative_components": False,   # M8: opt-in for generated unique components (experimental; no provider approved yet)
     "bake_normal": False,        # M5: tangent normal map from the detailed part onto a decimated copy (needs detail_engine_v2)
     "normal_size": 256,
     "normal_ratio": 0.6,         # kept share of triangles in the shipped copy; 0.3 dropped the trim (measured)
