@@ -974,9 +974,19 @@ def part_refs(spec: dict, photos) -> dict:
     return out
 
 
+MILD_TAPER = 0.9          # a part narrowing to at least 90 % at the top (tower stages) still takes a facade image
+
+
+def _steep_taper(p: dict) -> bool:
+    t = p.get("taper")
+    if not geom.is_tapered(t):
+        return False
+    return float(t.get("top_scale", 1.0)) < MILD_TAPER or any(abs(float(v)) > 0.05 for v in t.get("top_shift") or [])
+
+
 def generatable_parts(spec: dict) -> dict:
     return {p["id"]: p for p in spec["parts"] if p.get("enabled", True) is not False and p.get("facade")
-            and not geom.is_tapered(p.get("taper")) and (p.get("facade") or {}).get("opening_type") != "curtain_wall"
+            and not _steep_taper(p) and (p.get("facade") or {}).get("opening_type") != "curtain_wall"
             and float(p["height"]) >= 3}
 
 
@@ -996,7 +1006,7 @@ def _generated_items(prj: Project, spec: dict, photos, done: set, notes: list, o
 def _all_faces(spec: dict) -> set:
     out = set()
     for p in spec["parts"]:
-        if p.get("enabled", True) is False or float(p["height"]) < 3 or geom.is_tapered(p.get("taper")):
+        if p.get("enabled", True) is False or float(p["height"]) < 3 or _steep_taper(p):
             continue
         try:
             out |= {(p["id"], f["edge_index"]) for f in part_faces(spec, p)}
@@ -1086,10 +1096,24 @@ def review(prj: Project) -> dict:
                      "generated": rel(f"{pid}.png"), "layout": rel(f"{pid}_layout.png"),
                      "accepted": meta.get("accepted"), "problems": meta.get("problems") or note.get("problems") or [],
                      "error": note.get("error"), "attempts": meta.get("attempts"),
-                     "references": (refs.get(pid) or [])[:2], "generatable": pid in gen_ok})
+                     "references": (refs.get(pid) or [])[:2], "generatable": pid in gen_ok,
+                     "feature_faces": _feature_faces_review(gen_dir, pid)})
     swatches = [{"material": t.get("material"), "file": t.get("file"), "from": t.get("from"),
                  "licence": t.get("licence")} for t in texs if t.get("auto") and t.get("mode") == "repeat"]
     return {"parts": rows, "swatches": swatches, "result": data.get("result", {})}
+
+
+def _feature_faces_review(gen_dir, pid: str) -> list:
+    out = []
+    for mp in sorted(gen_dir.glob(f"{pid}__f*.json")):
+        meta = json.loads(mp.read_text(encoding="utf-8"))
+        edge = mp.stem.split("__f")[-1]
+        out.append({"edge_index": int(edge) if edge.isdigit() else edge, "features": meta.get("features", []),
+                    "accepted": meta.get("accepted"), "problems": meta.get("problems") or [],
+                    "image": f"reports/genfacade/{mp.stem}.png" if mp.with_suffix(".png").is_file() else None,
+                    "layout": f"reports/genfacade/{mp.stem}_layout.png"
+                    if (gen_dir / f"{mp.stem}_layout.png").is_file() else None})
+    return out
 
 
 def summary_line(res: dict) -> str:

@@ -607,6 +607,8 @@ async function loadTextureReview(id) {
     return `<div class="card txr-part"><h3>${esc(p.part)} <span class="muted">· cao ${p.height_m} m · ${p.faces} mặt · ${how}</span></h3>
       ${prob}${p.choice?.note ? `<p class="muted">Ghi chú lần vẽ trước: ${esc(p.choice.note)}</p>` : ''}
       <div class="row txr-imgs">${img(p.generated, 'Ảnh tạo')}${img(p.layout, 'Bố cục từ model')}${(p.references || []).map((x, i) => img(x, 'Ảnh thật ' + (i + 1))).join('')}</div>
+      ${(p.feature_faces || []).map(f => `<p class="muted">Mặt ${esc(String(f.edge_index))} có chi tiết riêng (${f.features.map(esc).join(', ')})${f.accepted === false ? ' — <span class="err">chưa đạt: ' + f.problems.map(esc).join('; ') + '</span>' : ''}</p>
+        <div class="row txr-imgs">${img(f.image, 'Ảnh tạo mặt ' + f.edge_index)}${img(f.layout, 'Bố cục mặt ' + f.edge_index)}</div>`).join('')}
       ${p.generatable ? `<div class="row"><input data-note="${esc(p.part)}" placeholder="Ghi chú cho lần vẽ lại (vd. cửa sổ màu xanh lá, có phào chỉ trắng)" style="flex:1">
         <button data-regen="${esc(p.part)}">Vẽ lại</button>
         ${mode === 'colour' ? `<button data-gen="${esc(p.part)}">Dùng lại ảnh tạo</button>` : `<button data-colour="${esc(p.part)}">Dùng màu trơn</button>`}</div>`

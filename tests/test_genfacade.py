@@ -122,3 +122,60 @@ def test_generated_textures_skin_the_real_mesh_and_photo_panels_do_not(prj):
     _, panels, atlas = textures_mod.build_job(prj)
     by = {p["id"]: p for p in panels}
     assert atlas and by["TX-AF-01"].get("skin") is True and "skin" not in by["TX-AF-02"]
+
+
+# ------------------------------------------------------------------ P4: faces with their own composition
+def _feature_part():
+    from landmark3d import autotex
+    faces = autotex.part_faces(SPEC, PART)
+    long_faces = sorted([f for f in faces if f["length_m"] > 20], key=lambda f: f["edge_index"])
+    a, b = long_faces[0], long_faces[1]
+    part = dict(PART, features=[
+        {"type": "disc", "facing_deg": a["facing_deg"], "z": 6.0, "diameter": 3.0},
+        {"type": "disc", "facing_deg": b["facing_deg"], "z": 6.0, "diameter": 3.0},
+        {"type": "panel", "facing_deg": a["facing_deg"], "z": 9.0, "width": 22.0, "height": 1.0},   # a band
+        {"type": "balustrade", "around": True, "z": 9.5}])
+    return part, a, b
+
+
+def test_face_features_take_the_features_on_that_face_and_skip_bands():
+    part, a, b = _feature_part()
+    feats = gf.face_features(part, a)
+    assert [f["type"] for f in feats] == ["disc"]
+    x0, z0, x1, z1 = feats[0]["box"]
+    assert (x0 + x1) / 2 == pytest.approx(12.0) and (z0, z1) == (4.5, 7.5)
+    side = next(f for f in __import__("landmark3d.autotex", fromlist=["x"]).part_faces(SPEC, part)
+                if f["length_m"] < 20)
+    assert gf.face_features(part, side) == []
+
+
+def test_feature_span_is_on_bay_lines_and_not_too_wide():
+    part, a, _ = _feature_part()
+    x0, x1 = gf.feature_span(a, part, gf.face_features(part, a))
+    bay = a["length_m"] / a["n_bays"]
+    assert x0 < 10.5 and x1 > 13.5
+    assert x0 / bay == pytest.approx(round(x0 / bay)) and x1 / bay == pytest.approx(round(x1 / bay))
+    wide = [{"type": "disc", "box": (0.0, 1.0, 24.0, 3.0), "weight": 3}]
+    low = dict(part, height=4)
+    x0, x1 = gf.feature_span(a, low, wide)
+    assert x1 - x0 <= gf.SEG_MAX_ASPECT * 4 + 1e-6
+
+
+def test_feature_faces_get_a_face_elevation_and_mirrored_twins_share_one(prj, tmp_path):
+    part, a, b = _feature_part()
+    calls = []
+
+    def fake(prompt, images):
+        calls.append(prompt)
+        path = tmp_path / f"g{len(calls)}.png"
+        painted(Image.open(images[-1])).save(path)
+        return path
+    notes = []
+    items = gf.items_for(prj, SPEC, {"wing": part}, lambda pid: ["input/photos/a.jpg"], set(), notes, fake)
+    by_edge = {it["face"]["edge_index"]: it for it in items}
+    assert by_edge[a["edge_index"]].get("feature_span") and by_edge[b["edge_index"]].get("feature_span")
+    assert len(calls) == 2                                   # the bay elevation + one shared feature elevation
+    assert "round element" in calls[1] and "1." in calls[1]
+    assert all(it["kind"] == "generated" for it in items) and len(items) == 4
+    gf.forget(prj, "wing")
+    assert not list((prj.root / "reports" / "genfacade").glob("wing__f*.png"))
