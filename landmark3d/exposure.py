@@ -83,40 +83,145 @@ def face_for(rows: list, facing: float):
     return max(cands, key=lambda r: r["length_m"]) if cands else None
 
 
-def feature_issues(spec_or_parts, main, fixable_only: bool = False) -> list[str]:
-    """Features on faces that are mostly hidden by other parts, and point features outside their part.
-    fixable_only: leave out parts hidden on every side (only a change of the volumes can free them)."""
-    parts = spec_or_parts["parts"] if isinstance(spec_or_parts, dict) else spec_or_parts
-    fx = faces(parts, main)
-    main = [tuple(p) for p in main]
+def _live(parts, main):
     out = []
     for p in parts:
-        if p.get("enabled", True) is False or p["id"] not in fx:
+        if p.get("enabled", True) is False:
             continue
-        rows = fx[p["id"]]
-        exposed = sorted((r for r in rows if r["exposed"] >= HIDDEN_MAX), key=lambda r: -r["length_m"])
-        where = ", ".join(f"{r['facing_deg']:g} deg ({compass(r['facing_deg'])}, {r['length_m']:g} m)"
-                          for r in exposed[:4]) or "none - the part is hidden on every side"
-        items = [(ft.get("type"), ft.get("facing_deg")) for ft in p.get("features") or []
-                 if ft.get("type") in FACED and ft.get("facing_deg") is not None and not ft.get("around")]
-        ent = (p.get("facade") or {}).get("entrance")
-        if ent and ent.get("facing_deg") is not None:
-            items.append(("entrance", ent["facing_deg"]))
-        seen = set()
-        if fixable_only and not exposed:
-            items = []
-        for kind, facing in items:
-            f = face_for(rows, facing)
-            if f is None or f["exposed"] >= HIDDEN_MAX or (kind, f["edge_index"]) in seen:
-                continue
-            seen.add((kind, f["edge_index"]))
-            out.append(f"part {p['id']}: the {kind} facing {float(facing):g} deg is on a wall that is "
-                       f"{1 - f['exposed']:.0%} hidden by other parts; put it on an exposed wall of this part "
-                       f"(exposed: {where}) or change the parts so that wall is free")
         try:
-            ring = geom.footprint_polygon(p["footprint"], main)
+            out.append((p, geom.ensure_ccw(geom.footprint_polygon(p["footprint"], main))))
         except Exception:
             continue
+    return out
+
+
+def _edge(ring, facing):
+    """(a, b, L, outward normal) of the longest edge facing within FACING_TOL_DEG of `facing`, else None."""
+    best = None
+    for i in range(len(ring)):
+        a, b = ring[i], ring[(i + 1) % len(ring)]
+        L = math.dist(a, b)
+        if L < 1.0:
+            continue
+        n = ((b[1] - a[1]) / L, -(b[0] - a[0]) / L)
+        if abs(_ang(math.degrees(math.atan2(n[1], n[0])) - float(facing))) <= FACING_TOL_DEG and \
+                (best is None or L > best[2]):
+            best = (a, b, L, n)
+    return best
+
+
+def feature_box(ft, L: float, h: float):
+    """(x0, x1, z0, z1) of a facing feature on its wall: x from the wall's left end seen from outside (the wall's
+    middle + offset), z above the part's base (disc and panel z is their centre, the others their bottom)."""
+    kind = ft.get("type")
+    off = float(ft.get("offset", 0) or 0)
+    if kind == "disc":
+        w = hh = float(ft.get("diameter", 3.0))
+        z0 = float(ft.get("z", h / 2)) - hh / 2
+    elif kind == "panel":
+        w, hh = float(ft.get("width", 4.0)), float(ft.get("height", 1.5))
+        z0 = float(ft.get("z", h / 2)) - hh / 2
+    elif kind == "column":
+        n, sp, d = int(ft.get("count", 1) or 1), float(ft.get("spacing", 2.5)), float(ft.get("diameter", 0.6))
+        w, hh, z0 = (n - 1) * sp + d, float(ft.get("height", 4.0)), float(ft.get("z", 0.0))
+    elif kind == "entrance":
+        w, hh, z0 = float(ft.get("width", 3.0)), float(ft.get("height", 4.0)), 0.0
+    else:
+        w = float(ft.get("width", min(L, 4.0)))
+        hh = float(ft.get("height", ft.get("rail_height", 1.5)) or 1.5)
+        z0 = float(ft.get("z", 0.0))
+    xc = L / 2 + off
+    w = min(max(0.5, w), L)
+    return xc - w / 2, xc + w / 2, max(0.0, z0), max(0.5, min(h, z0 + hh))
+
+
+def feature_exposed(p, ring, ft, live):
+    """Share of the feature's own patch of wall (just in front of it) that is not inside another part; None when the
+    part has no wall facing that way."""
+    e = _edge(ring, ft.get("facing_deg", 270))
+    if e is None:
+        return None
+    a, b, L, n = e
+    base, h = float(p.get("base_z", 0)), float(p["height"])
+    x0, x1, z0, z1 = feature_box(ft, L, h)
+    d = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+    hits = tot = 0
+    for zf in (0.2, 0.5, 0.8):
+        z = base + z0 + (z1 - z0) * zf
+        others = [r for q, r in live if q is not p and float(q.get("base_z", 0)) - 0.1 <= z <= _top(q)]
+        for j in range(7):
+            x = x0 + (x1 - x0) * (j + 0.5) / 7
+            pt = (a[0] + d[0] * x + n[0] * SAMPLE_OUT_M, a[1] + d[1] * x + n[1] * SAMPLE_OUT_M)
+            tot += 1
+            hits += any(geom.point_in_polygon(pt, r) for r in others)
+    return 1 - hits / max(1, tot)
+
+
+def _facing_items(p):
+    items = [ft for ft in p.get("features") or []
+             if ft.get("type") in FACED and ft.get("facing_deg") is not None and not ft.get("around")]
+    ent = (p.get("facade") or {}).get("entrance")
+    if ent and ent.get("facing_deg") is not None:
+        items.append(dict(ent, type="entrance"))
+    return items
+
+
+def free_stretches(p, ring, live) -> str:
+    """Where each wall of the part is free at mid-height, e.g. '319 deg SE: offset -4.0..+4.0 m (8 m free of 25 m)',
+    for walls with at least 2 m free, longest first. Offsets run along the wall from its middle, as features use."""
+    base, h = float(p.get("base_z", 0)), float(p["height"])
+    z = base + 0.5 * h
+    others = [r for q, r in live if q is not p and float(q.get("base_z", 0)) - 0.1 <= z <= _top(q)]
+    found = []
+    for i in range(len(ring)):
+        a, b = ring[i], ring[(i + 1) % len(ring)]
+        L = math.dist(a, b)
+        if L < 2.0:
+            continue
+        n = ((b[1] - a[1]) / L, -(b[0] - a[0]) / L)
+        d = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+        k = max(8, min(60, int(L / 0.5)))
+        free = [not any(geom.point_in_polygon((a[0] + d[0] * L * (j + 0.5) / k + n[0] * SAMPLE_OUT_M,
+                                               a[1] + d[1] * L * (j + 0.5) / k + n[1] * SAMPLE_OUT_M), r)
+                        for r in others) for j in range(k)]
+        runs, cur, start = [], 0, 0
+        for j, f in enumerate(free + [False]):
+            if f:
+                if cur == 0:
+                    start = j
+                cur += 1
+            elif cur:
+                runs.append((start * L / k, (start + cur) * L / k))
+                cur = 0
+        runs = [(x0, x1) for x0, x1 in runs if x1 - x0 >= 2.0]
+        if runs:
+            fac = math.degrees(math.atan2(n[1], n[0])) % 360
+            free_m = sum(x1 - x0 for x0, x1 in runs)
+            found.append((free_m, f"{fac:.0f} deg {compass(fac)}: offset " + ", ".join(
+                f"{x0 - L / 2:+.1f}..{x1 - L / 2:+.1f}" for x0, x1 in runs[:3]) + f" m ({free_m:.0f} m free of {L:.0f} m)"))
+    return "; ".join(t for _, t in sorted(found, key=lambda t: -t[0])[:5])
+
+
+def feature_issues(spec_or_parts, main, fixable_only: bool = False) -> list[str]:
+    """Facing features whose own patch of wall is mostly buried in another part (measured where the feature is, not
+    over the whole wall: a rose window between two towers is free even when the towers cover most of that wall), and
+    point features outside their part. fixable_only: leave out parts hidden on every side."""
+    parts = spec_or_parts["parts"] if isinstance(spec_or_parts, dict) else spec_or_parts
+    main = [tuple(p) for p in main]
+    live = _live(parts, main)
+    out = []
+    for p, ring in live:
+        where = free_stretches(p, ring, live)
+        if fixable_only and not where:
+            continue
+        for ft in _facing_items(p):
+            ex = feature_exposed(p, ring, ft, live)
+            if ex is None or ex >= HIDDEN_MAX:
+                continue
+            out.append(f"part {p['id']}: the {ft['type']} facing {float(ft['facing_deg']):g} deg (offset "
+                       f"{float(ft.get('offset', 0) or 0):g} m) is {1 - ex:.0%} buried in other parts; put it where "
+                       f"that part's wall is free ({where or 'nowhere - the part is hidden on every side'}) or "
+                       f"change the parts so the wall is free")
         for ft in p.get("features") or []:
             if ft.get("x") is None or ft.get("y") is None:
                 continue
@@ -128,45 +233,38 @@ def feature_issues(spec_or_parts, main, fixable_only: bool = False) -> list[str]
 
 
 def exposure_text(spec_or_parts, main) -> str:
-    """Prompt section: per part, the faces that can be seen (direction, compass, length, share exposed)."""
-    fx = faces(spec_or_parts, main)
-    lines = []
-    for pid, rows in fx.items():
-        vis = [r for r in sorted(rows, key=lambda r: -r["length_m"]) if r["exposed"] >= HIDDEN_MAX]
-        hid = [r for r in rows if r["exposed"] < HIDDEN_MAX and r["length_m"] >= 3]
-        lines.append(f"- {pid}: exposed " + (", ".join(
-            f"{r['facing_deg']:g} deg {compass(r['facing_deg'])} {r['length_m']:g} m ({r['exposed']:.0%})"
-            for r in vis[:6]) or "none") + ("; hidden " + ", ".join(f"{r['facing_deg']:g} deg" for r in hid[:6])
-                                            if hid else ""))
-    return "\n".join(lines)
+    """Prompt section: per part, the stretches of each wall that are free (not buried in another part) at mid-height,
+    as offsets from the wall's middle, the way features are placed."""
+    parts = spec_or_parts["parts"] if isinstance(spec_or_parts, dict) else spec_or_parts
+    main = [tuple(p) for p in main]
+    live = _live(parts, main)
+    return "\n".join(f"- {p['id']}: " + (free_stretches(p, ring, live) or "no free wall (hidden on every side)")
+                     for p, ring in live)
 
 
 def drop_hidden_features(spec_or_parts, main) -> tuple[list, list[str]]:
-    """Copy of the parts without the facing features that sit on a mostly hidden wall of a part that HAS an exposed
-    wall (the facade step was told where the exposed walls are), and without point features outside their part.
+    """Copy of the parts without the facing features whose own patch of wall is mostly buried (when the part has free
+    wall elsewhere, which the facade step was shown), and without point features outside their part.
     Returns (parts, notes). The tool fixes these itself instead of rejecting a whole facade answer."""
     parts = spec_or_parts["parts"] if isinstance(spec_or_parts, dict) else spec_or_parts
-    fx = faces(parts, main)
     main_t = [tuple(p) for p in main]
+    live = _live(parts, main_t)
+    rings = {id(p): r for p, r in live}
     out, notes = [], []
     for p in parts:
-        rows = fx.get(p.get("id"), [])
-        if not rows or not any(r["exposed"] >= HIDDEN_MAX for r in rows) or not p.get("features"):
+        ring = rings.get(id(p))
+        if ring is None or not p.get("features") or not free_stretches(p, ring, live):
             out.append(p)
             continue
-        try:
-            ring = geom.footprint_polygon(p["footprint"], main_t)
-        except Exception:
-            ring = None
         keep = []
         for ft in p["features"]:
             if ft.get("type") in FACED and ft.get("facing_deg") is not None and not ft.get("around"):
-                f = face_for(rows, ft["facing_deg"])
-                if f is not None and f["exposed"] < HIDDEN_MAX:
+                ex = feature_exposed(p, ring, ft, live)
+                if ex is not None and ex < HIDDEN_MAX:
                     notes.append(f"part {p['id']}: dropped the {ft['type']} facing {float(ft['facing_deg']):g} deg "
-                                 f"(wall {1 - f['exposed']:.0%} hidden)")
+                                 f"({1 - ex:.0%} buried)")
                     continue
-            if ring is not None and ft.get("x") is not None and ft.get("y") is not None and \
+            if ft.get("x") is not None and ft.get("y") is not None and \
                     not geom.inside_with_tol((float(ft["x"]), float(ft["y"])), ring, POINT_TOL_M):
                 notes.append(f"part {p['id']}: dropped the {ft.get('type')} outside the part")
                 continue

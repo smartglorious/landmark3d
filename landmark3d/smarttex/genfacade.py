@@ -555,7 +555,6 @@ def check_unique(img: Image.Image, wall_srgb=None) -> list[str]:
     return probs
 
 
-EXPOSED_MIN = 0.5               # a feature face must be at least this share exposed (exposure.faces)
 SKIN_EXPOSED_MIN = 0.15         # faces buried deeper than this get no generated skin (nobody sees them)
 
 
@@ -570,14 +569,23 @@ def exposed_share(spec: dict) -> dict:
 
 
 def feature_faces(spec: dict, parts: dict, done: set) -> list[tuple]:
-    """[(part id, face, features)] of the exposed faces with features, most important first, at most
-    MAX_FEATURE_FACES. A face buried inside other parts gets no image: nobody can see it."""
-    from .. import autotex
+    """[(part id, face, features)] of the faces with visible features, most important first, at most
+    MAX_FEATURE_FACES. Features whose own patch of wall is buried in another part are left out (measured where the
+    feature is: a rose window between two towers stays, although the towers cover most of that wall)."""
+    from .. import autotex, exposure
     cands = []
     ex = exposed_share(spec)
+    try:
+        merged = [parts.get(q["id"], q) for q in spec["parts"]] + [q for k, q in parts.items()
+                                                                   if k not in {x["id"] for x in spec["parts"]}]
+        clean, _ = exposure.drop_hidden_features(merged, spec["footprint"]["local"])
+        visible = {q["id"]: q for q in clean}
+    except (KeyError, TypeError, ValueError):
+        visible = {}
     for pid, part in parts.items():
+        part = dict(part, features=(visible.get(pid) or part).get("features"))
         for f in autotex.part_faces(spec, part):
-            if (pid, f["edge_index"]) in done or ex.get((pid, f["edge_index"]), 1.0) < EXPOSED_MIN:
+            if (pid, f["edge_index"]) in done or ex.get((pid, f["edge_index"]), 1.0) < SKIN_EXPOSED_MIN:
                 continue
             feats = face_features(part, f)
             bay = float(f["length_m"]) / max(1, int(f["n_bays"]))

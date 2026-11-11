@@ -51,7 +51,9 @@ def test_a_part_hidden_on_every_side_is_left_to_the_massing_when_only_fixable_is
 
 def test_exposure_text_lists_exposed_walls_with_compass_names():
     text = exposure.exposure_text(nave_and_transept(), MAIN)
-    assert "transept: exposed" in text and "N" in text
+    line = next(l for l in text.splitlines() if l.startswith("- transept"))
+    assert "90 deg N: offset -5.0..+5.0 m (10 m free of 10 m)" in line
+    assert "0 deg E: offset -15.0..-6.0, +6.0..+15.0 m" in line          # both free ends of the long wall
     assert exposure.compass(90) == "N" and exposure.compass(0) == "E" and exposure.compass(225) == "SW"
 
 
@@ -110,3 +112,19 @@ def test_facade_answer_is_kept_with_bad_features_dropped(tmp_path, monkeypatch):
     t = next(p for p in out["parts"] if p["id"] == "transept")
     assert [f["facing_deg"] for f in t["features"]] == [90] and t["facade"]["opening_type"] == "arch"
     assert len(entry["features_dropped"]) == 2
+
+
+
+def test_a_rose_window_between_two_towers_is_free_although_the_towers_cover_most_of_that_wall():
+    """Regression: exposure measured over the whole wall made the facade AI delete the rose window, clock and portal
+    of a church front (the towers cover 67 % of the nave's front wall, but not its middle)."""
+    nave = {"id": "nave", "footprint": rect(0, 0, 24, 40), "base_z": 0, "height": 20,
+            "features": [{"type": "disc", "facing_deg": 270, "z": 14, "diameter": 6},
+                         {"type": "disc", "facing_deg": 270, "z": 14, "diameter": 3, "offset": 9}],
+            "facade": {"entrance": {"width": 4, "height": 6, "facing_deg": 270}}}
+    left = {"id": "tower_l", "footprint": rect(-9, -19, 8, 8), "base_z": 0, "height": 36}
+    right = {"id": "tower_r", "footprint": rect(9, -19, 8, 8), "base_z": 0, "height": 36}
+    iss = exposure.feature_issues([nave, left, right], MAIN)
+    assert len(iss) == 1 and "offset 9" in iss[0]                    # only the one behind the right tower
+    parts, notes = exposure.drop_hidden_features([nave, left, right], MAIN)
+    assert [f.get("offset", 0) for f in parts[0]["features"]] == [0] and len(notes) == 1
