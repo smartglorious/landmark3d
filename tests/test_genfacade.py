@@ -1,5 +1,6 @@
 """Generated facade textures (smarttex.genfacade) with a fake generator: layout, checks, retry, cache, tiling."""
 import importlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -214,3 +215,19 @@ def test_generated_skins_get_one_atlas_per_part_at_full_width(prj):
     with Image.open(by["TX-1"]["atlas"]) as im:
         u0, _, u1, _ = by["TX-1"]["uv"]
         assert (u1 - u0) * im.width > 1700
+
+
+def test_skin_atlases_shrink_to_their_share_of_the_byte_limit(prj):
+    from landmark3d import textures as textures_mod
+    rng = np.random.default_rng(1)
+    rows = []
+    for k in range(3):
+        Image.fromarray(rng.integers(0, 255, (512, 1500, 3), dtype=np.uint8)).save(
+            prj.path("input", "textures", f"n{k}.jpg"))
+        rows.append({"id": f"TX-{k}", "auto": True, "file": f"input/textures/n{k}.jpg", "mode": "panel",
+                     "part": f"p{k}", "side": "face0", "edge_index": 0, "z0": 0, "z1": 10, "licence": "ai_generated",
+                     "kind": "generated", "generated": True, "source_id": "codex-generated"})
+    prj.write_json("input/textures.json", {"textures": rows})
+    _, panels, _ = textures_mod.build_job(prj, 2048, bytes_max=2_000_000)
+    used = sum(Path(p).stat().st_size for p in {pn["atlas"] for pn in panels})
+    assert used <= textures_mod.SKIN_BYTES_SHARE * 2_000_000

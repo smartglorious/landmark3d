@@ -651,8 +651,7 @@ def check_material(img: Image.Image, srgb, curtain: bool = False) -> list[str]:
     from . import quads
     probs = []
     a = np.asarray(img.convert("RGB").resize((128, 128), Image.LANCZOS))
-    if not curtain and metrics.sky_share(np.asarray(img.convert("RGB"))) > metrics.THRESHOLDS["sky_share_max"]:
-        probs.append("there is sky in the image: show only the material")
+    # no sky test: a material tile has no top edge, and grey-blue metal or slate reads as sky; colour decides
     if srgb is not None and float(np.linalg.norm(np.median(a.reshape(-1, 3), axis=0).astype(np.float32)
                                                  - np.asarray(srgb[:3], np.float32))) > COLOUR_MAX * (1.4 if curtain else 1):
         probs.append(f"the colour is far from about RGB {tuple(srgb[:3])}")

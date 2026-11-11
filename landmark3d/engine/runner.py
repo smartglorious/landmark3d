@@ -124,7 +124,8 @@ def build(prj: Project, timeout: int = 1800) -> dict:
     if not spec:
         return {"ok": False, "errors": ["no spec"]}
     from .. import textures as textures_mod
-    repeat, panels, atlas = textures_mod.build_job(prj, int(spec["budgets"].get("texture_max_px", 2048)))
+    repeat, panels, atlas = textures_mod.build_job(prj, int(spec["budgets"].get("texture_max_px", 2048)),
+                                                   spec["budgets"].get("bytes_max"))
     for tex in repeat.values():                     # real pixel sizes, for the build accounting (M5)
         try:
             from PIL import Image

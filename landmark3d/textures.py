@@ -176,14 +176,15 @@ def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048, name: str 
     return str(out), uv
 
 
-SKIN_PX_BUDGET = 12_000_000     # all skin atlases together (px); above it every skin image is scaled down evenly
+SKIN_PX_BUDGET = 12_000_000     # all skin images together (px); above it every skin image is scaled down evenly
+SKIN_BYTES_SHARE = 0.45         # share of the GLB byte limit the per-part skin atlases may take (JPEG)
 
 
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))[:60]
 
 
-def build_job(prj: Project, max_px: int = 2048) -> tuple[dict, list, str | None]:
+def build_job(prj: Project, max_px: int = 2048, bytes_max: int | None = None) -> tuple[dict, list, str | None]:
     """(repeat textures by material, panels with UV rects, atlas path) for the Blender job."""
     data = load(prj)
     repeat, panels = {}, []
@@ -208,13 +209,22 @@ def build_job(prj: Project, max_px: int = 2048) -> tuple[dict, list, str | None]
         with Image.open(prj.root / t["file"]) as im:
             total += im.size[0] * im.size[1]
     scale0 = min(1.0, (SKIN_PX_BUDGET / total) ** 0.5) if total else 1.0
-    skin_atlas = {}
-    for part in sorted({t["part"] for t in skins}):
-        mine = [t for t in skins if t["part"] == part]
-        path, puv = pack_panels(prj, mine, max_px, name=f"skin_atlas_{_safe(part)}.jpg", cell_max=max_px,
-                                scale0=scale0)
-        uv.update(puv)
-        skin_atlas.update({t["id"]: path for t in mine})
+    # the skin atlases share SKIN_BYTES_SHARE of the GLB byte limit: packed again smaller until they fit
+    limit = SKIN_BYTES_SHARE * float(bytes_max) if bytes_max else None
+    skin_atlas, skin_uv = {}, {}
+    for _ in range(4):
+        skin_atlas, skin_uv, used = {}, {}, 0
+        for part in sorted({t["part"] for t in skins}):
+            mine = [t for t in skins if t["part"] == part]
+            path, puv = pack_panels(prj, mine, max_px, name=f"skin_atlas_{_safe(part)}.jpg", cell_max=max_px,
+                                    scale0=scale0)
+            skin_uv.update(puv)
+            skin_atlas.update({t["id"]: path for t in mine})
+            used += Path(path).stat().st_size
+        if limit is None or used <= limit:
+            break
+        scale0 *= 0.92 * (limit / used) ** 0.5
+    uv.update(skin_uv)
     job_panels = [{"id": t["id"], "part": t["part"], "side": t["side"], "z0": t.get("z0"), "z1": t.get("z1"),
                    "edge_index": t.get("edge_index"), "uv": uv[t["id"]],
                    **({"skin": True, "atlas": skin_atlas[t["id"]]} if t["id"] in skin_atlas else {})}
