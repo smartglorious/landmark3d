@@ -247,9 +247,23 @@ def build_spec(prj: Project) -> dict:
                 massing = dict(massing, parts=fitted)
             prj.log("plan fitted to the footprint", fit_report)
             use_judge = bool(photos) and settings_mod.load().get("judge", True)
-            if use_judge:
+            # The facade grammar decides the generated textures. The judge is too noisy to gate it (2026-11-10 A/B),
+            # so by default one facade pass is accepted on the deterministic checks of its validator (facade_issues,
+            # check_facade) and the judge reads the final model once, for the record. "facade_gate": "judge" keeps
+            # the earlier judge-gated rounds for comparison.
+            judge_gated = settings_mod.load().get("facade_gate", "checks") == "judge"
+            if photos and settings_mod.load().get("facade_pass", True) and not judge_gated:
+                refined, facade_log = facade_pass(prj, provider, massing, photos, massing_check, st, main=main)
+                facade_log["round"] = 1
+                if refined is not massing:
+                    facade_log["result"] = "kept: passed the deterministic facade checks"
+                    massing = refined
+                review_log.append(facade_log)
+            if use_judge and not judge_gated:
                 quality = judge(prj, provider, massing, photos, sat_imgs, main, materials, st)
-            if photos and settings_mod.load().get("facade_pass", True):
+            if use_judge and judge_gated:
+                quality = judge(prj, provider, massing, photos, sat_imgs, main, materials, st)
+            if photos and settings_mod.load().get("facade_pass", True) and judge_gated:
                 rounds_f = 1 + max(0, int(settings_mod.load().get("facade_review_rounds", 2) or 0))
                 rejected_notes = []
                 for fr in range(rounds_f):

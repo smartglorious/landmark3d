@@ -435,6 +435,17 @@ def delete_texture(pid: str, tid: str):
     return {"ok": True}
 
 
+@app.get("/api/projects/{pid}/layouts")
+def layouts(pid: str):
+    """A2: the facade layouts each part's generated texture will follow (bays, floors, openings, features)."""
+    from .smarttex import genfacade
+    prj = _prj(pid)
+    sp = prj.read_json("spec/landmark_spec.json")
+    if not sp:
+        raise HTTPException(409, "no spec yet")
+    return {"parts": genfacade.preview_layouts(prj, sp)}
+
+
 @app.get("/api/projects/{pid}/texture_review")
 def texture_review(pid: str):
     """A2.5: per part, the generated elevation, its layout, problems, references and the owner's choice."""

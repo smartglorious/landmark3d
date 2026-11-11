@@ -179,3 +179,12 @@ def test_feature_faces_get_a_face_elevation_and_mirrored_twins_share_one(prj, tm
     assert all(it["kind"] == "generated" for it in items) and len(items) == 4
     gf.forget(prj, "wing")
     assert not list((prj.root / "reports" / "genfacade").glob("wing__f*.png"))
+
+
+def test_a2_preview_layouts_list_parts_and_feature_faces(prj):
+    part, a, _ = _feature_part()
+    spec = dict(SPEC, parts=[part])
+    rows = gf.preview_layouts(prj, spec)
+    assert rows[0]["part"] == "wing" and (prj.root / rows[0]["layout"]).is_file()
+    assert {f["edge_index"] for f in rows[0]["faces"]} >= {a["edge_index"]}
+    assert all((prj.root / f["layout"]).is_file() for f in rows[0]["faces"])

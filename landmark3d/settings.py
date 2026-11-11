@@ -47,7 +47,8 @@ DEFAULTS = {
     "normal_ratio": 0.6,         # kept share of triangles in the shipped copy; 0.3 dropped the trim (measured)
     "facade_observations": False,  # M3: the AI proposes facade observations per photo (calls the AI; off by default)
     "detail_engine_v2": False,   # M1: contracts only; the flag must stay off until a v2 generator is released
-    "facade_review_rounds": 2,  # extra facade rounds driven by the judge's errors (kept only if the score rises)      # AI pass for per-floor facades and detail features after the review rounds
+    "facade_review_rounds": 2,  # only with facade_gate "judge": extra facade rounds driven by the judge's errors
+    "facade_gate": "checks",    # "checks": one facade pass accepted on deterministic checks; "judge": earlier judge-gated rounds
     "judge": True,
     "judge_samples": 3,       # independent readings averaged into each score (one reading moves by a point or more)
     "auto_textures": True,    # facade photo panels + seamless material swatches from licence-allowed photos            # independent AI score of the final model (spec["quality"])

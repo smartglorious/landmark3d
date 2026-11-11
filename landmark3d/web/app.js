@@ -561,6 +561,7 @@ function renderApproval(stage, id, cur, d) {
         ${(r.differences || []).length ? `<ul>${r.differences.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</p>
         <div class="row">${(r.images || []).map(im => `<a href="/files/${id}/${esc(im)}" target="_blank"><img src="/files/${id}/${esc(im)}" style="max-width:420px;border:1px solid var(--line);border-radius:4px"></a>`).join('')}</div>`).join('')}` : ''}
       ${(sp.observations || []).length ? `<h3>Quan sát mặt đứng (AI, từng ảnh)</h3><ul>${sp.observations.map(o => `<li>${esc(o.photo)}: ${esc(o.result)}${o.observations ? ` (${esc(String(o.observations))} quan sát)` : ''}</li>`).join('')}</ul>` : ''}
+      <h3>Bố cục mặt đứng <span class="muted">(ảnh texture sẽ được vẽ đúng theo các bố cục này)</span></h3><div id="layouts"><p class="muted">Đang tải…</p></div>
       <h3>Mặt đứng: chọn cạnh, sửa lưới, gán ảnh</h3><div id="facade-review"><p class="muted">Đang tải…</p></div>
       <details><summary>Sửa spec (JSON)</summary><textarea id="spec-json" rows="18">${esc(JSON.stringify(sp, null, 2))}</textarea>
       <button id="spec-save">Lưu spec</button> <span id="spec-msg"></span></details>`;
@@ -582,6 +583,7 @@ function renderApproval(stage, id, cur, d) {
   };
   bindApproval(id, cur.id);
   if (cur.id === 'spec_review') loadFacadeReview(id);
+  if (cur.id === 'spec_review') loadLayouts(id);
   if (cur.id === 'texture_review') loadTextureReview(id);
 }
 
@@ -937,3 +939,17 @@ api('GET', '/api/about').then(a => {
 }).catch(() => {});
 
 route();
+
+// A2: the elevation layout of each part (bays, floors, openings) and of each face with features, as the texture
+// generator will receive them. Wrong grids are fixed here (spec or facade step), before any image is drawn.
+async function loadLayouts(id) {
+  const el = document.getElementById('layouts');
+  if (!el) return;
+  let r;
+  try { r = await api('GET', `/api/projects/${id}/layouts`); } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const t = Date.now();
+  const fig = (src, cap) => `<figure class="txr-fig"><a href="/files/${id}/${esc(src)}?t=${t}" target="_blank"><img src="/files/${id}/${esc(src)}?t=${t}"></a><figcaption>${esc(cap)}</figcaption></figure>`;
+  el.innerHTML = r.parts.length ? r.parts.map(p => `<p><b>${esc(p.part)}</b> <span class="muted">${p.floors} tầng · ô ${p.bay_m} m · cao ${p.height_m} m</span></p>
+    <div class="row txr-imgs">${fig(p.layout, p.bays + ' ô lặp')}${p.faces.map(f => fig(f.layout, 'mặt ' + f.edge_index + ': ' + f.features.length + ' chi tiết')).join('')}</div>`).join('')
+    : '<p class="muted">Không có khối nào vẽ texture bằng Codex.</p>';
+}

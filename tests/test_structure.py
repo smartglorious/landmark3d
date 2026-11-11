@@ -514,7 +514,8 @@ def test_facade_pass_discarded_when_judge_score_drops(tmp_path, monkeypatch):
     import importlib
     from landmark3d import settings
     importlib.reload(settings)
-    settings.update({"projects_dir": str(tmp_path / "projects"), "photo_review_rounds": 0})
+    settings.update({"projects_dir": str(tmp_path / "projects"), "photo_review_rounds": 0,
+                     "facade_gate": "judge"})
     from landmark3d import pipeline
     from landmark3d.project import Project
     from landmark3d.research import ai
@@ -544,3 +545,40 @@ def test_facade_pass_discarded_when_judge_score_drops(tmp_path, monkeypatch):
     assert sp["parts"][0]["facade"]["opening_type"] == "arch"           # the worse facade pass was discarded
     assert sp["quality"]["overall"] == 7 and len(calls) == 4            # a discarded round does not end the pass
     assert "discarded" in sp["photo_review"][-1]["result"]
+
+
+def test_default_facade_pass_runs_once_on_checks_and_judge_reads_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    import importlib
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects"), "photo_review_rounds": 0})
+    from landmark3d import pipeline
+    from landmark3d.project import Project
+    from landmark3d.research import ai
+    from PIL import Image
+    import json
+    prj = Project.create("Keep Test", "X", lat=10.0, lon=106.0)
+    half = 0.0003
+    ring = [[106 - half, 10 - half], [106 + half, 10 - half], [106 + half, 10 + half], [106 - half, 10 + half], [106 - half, 10 - half]]
+    prj.write_json("input/geo/footprint.geojson", {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}]})
+    pipeline.submit_inputs(prj, {"main_wall_height_m": 12, "roof_form": "flat"})
+    Image.new("RGB", (200, 150), (100, 100, 100)).save(prj.path("input", "photos", "a.jpg"))
+    prj.write_json("input/sources.json", {"sources": [{"id": "U1", "kind": "photo", "path": "input/photos/a.jpg", "origin": "user"}]})
+    mats = {"wall": {"srgb": [1, 2, 3]}, "roof": {"srgb": [1, 2, 3]}, "trim": {"srgb": [1, 2, 3]}}
+    massing = {"parts": [dict(part("hall", {"rect": {"cx": 0, "cy": 0, "w": 30, "d": 20}}, 0, 12),
+                              facade={"opening_type": "arch", "level_height": 4})], "materials": mats}
+    worse = {"parts": [{"id": "hall", "facade": {"opening_type": "rect", "level_height": 4}}], "materials": {}}
+    calls = []
+    monkeypatch.setattr(pipeline, "judge", lambda *a, **k: calls.append(1) or {"overall": 7 if len(calls) == 1 else 5,
+                                                                            "scores": {}})
+
+    class Fake(ai.Provider):
+        def chat(self, system, prompt, **k):
+            return ai.AIResult(json.dumps(worse if "FACADES" in prompt else massing), "fake", "m", [])
+    monkeypatch.setattr(ai, "get", lambda task="research", name=None: Fake("m"))
+    sp = pipeline.build_spec(prj)
+    # default gate: the valid facade answer is kept on the deterministic checks; the judge reads the result once
+    assert sp["parts"][0]["facade"]["opening_type"] == "rect"
+    assert len(calls) == 1 and "deterministic" in sp["photo_review"][-1]["result"]

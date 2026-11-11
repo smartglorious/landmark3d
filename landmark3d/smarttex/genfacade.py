@@ -581,3 +581,36 @@ def items_for(prj, spec: dict, parts: dict, refs_for, done: set, notes: list, ge
             if base is not None:
                 items.append({"face": f, "img": base, "src": src, "kind": "generated"})
     return items
+
+
+def preview_layouts(prj, spec: dict) -> list:
+    """A2: the elevation layouts the generator will receive (one per part, plus each face with features), drawn into
+    reports/layouts/. No AI."""
+    from .. import autotex
+    out_dir = prj.root / "reports" / "layouts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("*.png"):
+        old.unlink()
+    parts = autotex.generatable_parts(spec)
+    special = {}
+    for pid, f, feats in feature_faces(spec, parts, set()):
+        special.setdefault(pid, []).append((f, feats))
+    rows = []
+    for pid, part in parts.items():
+        faces = autotex.part_faces(spec, part)
+        if not faces:
+            continue
+        n = max(1, min(MAX_BAYS, min(f["n_bays"] for f in faces)))
+        lay, info = layout(part, n)
+        lay.save(out_dir / f"{pid}.png")
+        row = {"part": pid, "layout": f"reports/layouts/{pid}.png", "bays": n, "floors": info["floors"],
+               "bay_m": info["bay_m"], "height_m": info["height_m"], "faces": []}
+        for f, feats in special.get(pid, []):
+            span = feature_span(f, part, feats)
+            sl, si = segment_layout(part, f, span, feats)
+            name = f"{pid}__f{f['edge_index']}.png"
+            sl.save(out_dir / name)
+            row["faces"].append({"edge_index": f["edge_index"], "layout": f"reports/layouts/{name}",
+                                 "span_m": list(span), "features": si["labels"]})
+        rows.append(row)
+    return rows
