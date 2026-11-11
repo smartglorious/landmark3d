@@ -139,3 +139,17 @@
 20:44:11 project vietcombank-tower
 20:44:16 vietcombank-tower stopped at doctor (failed): missing: blender, blender_headless, gltf_exporter | missing: []
 20:44:16 DONE {"bao-tang-thanh-pho-ho-chi-minh": "stopped at build (failed): Blender exited with code 3221225794 (0xC0000142); \n[landmark3d] Blender exited with code 3221225794 (0xC0000142) | missing: []", "nha-tho-tan-inh": "stopped at doctor (failed): missing: blender, blender_headless, gltf_exporter | missing: []", "bao-tang-my-thuat-thanh-pho-ho-chi-minh": "stopped at doctor (failed): missing: blender, blender_headless, gltf_exporter | missing: []", "vietcombank-tower": "stopped at doctor (failed): missing: blender, blender_headless, gltf_exporter | missing: []"}
+20:48:17 resume bao-tang-thanh-pho-ho-chi-minh failed phases reset: ['build']
+20:48:29 bao-tang-thanh-pho-ho-chi-minh A3 waiting (0 min): 10743 triangles, 1598268 bytes, 11 renders
+20:48:29 resume nha-tho-tan-inh failed phases reset: ['doctor']
+20:51:50 nha-tho-tan-inh approved sources_review
+20:59:07 nha-tho-tan-inh approved spec_review
+21:25:46 nha-tho-tan-inh approved texture_review
+21:26:01 nha-tho-tan-inh A3 waiting (38 min): 15261 triangles, 2666156 bytes, 11 renders
+21:26:01 resume bao-tang-my-thuat-thanh-pho-ho-chi-minh failed phases reset: ['doctor']
+21:30:17 bao-tang-my-thuat-thanh-pho-ho-chi-minh approved sources_review
+21:30:17 bao-tang-my-thuat-thanh-pho-ho-chi-minh stopped at completion (blocked): 2 item(s) needed from the user | missing: ['main_wall_height_m', 'roof_form']
+21:30:17 resume vietcombank-tower failed phases reset: ['doctor']
+21:34:03 vietcombank-tower approved sources_review
+21:36:24 vietcombank-tower STOPPED: AI usage limit or AI failure
+21:36:24 DONE {"bao-tang-thanh-pho-ho-chi-minh": "A3 waiting (0 min): 10743 triangles, 1598268 bytes, 11 renders", "nha-tho-tan-inh": "A3 waiting (38 min): 15261 triangles, 2666156 bytes, 11 renders", "bao-tang-my-thuat-thanh-pho-ho-chi-minh": "stopped at completion (blocked): 2 item(s) needed from the user | missing: ['main_wall_height_m', 'roof_form']", "vietcombank-tower": "STOPPED: AI usage limit or AI failure"}

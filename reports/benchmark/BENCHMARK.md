@@ -260,3 +260,25 @@ Dev set, specs reused as approved (the spec phase, P5, was not rerun). `scripts_
   generated faces are not colour-corrected per face; blank walls pass the window check.
 - Not done: the held-out set (one frozen run) and a judge reading of these builds; both cost AI quota and wait for
   the owner.
+
+## 2026-11-11 — held-out set 2, run once with the tool frozen
+
+Tool frozen at commit b45d8f0 (record: `heldout2_tool_freeze.txt`); four landmarks never used during development;
+in-process runner `run_heldout_direct.py`, A1, A2 and A2.5 approved automatically, no manual inputs. The first attempt
+was cut when the machine stopped (Blender 0xC0000142 / doctor failed before any AI call); the run resumed only the
+failed phases with the same frozen tool.
+
+| Landmark | Result | Parts | Triangles | GLB | Generated faces / photo crops | Seam ΔE | Bay phase | M6 gate | Judge |
+|---|---|---|---|---|---|---|---|---|---|
+| Bảo tàng TP.HCM | A3 | 4 | 10 743 | 1.6 MB | 14 / 0, 3 tiles | 1.64 | 0.004 | plan_iou 0.788 | 4.0 |
+| Nhà thờ Tân Định | A3 (38 min) | 6 | 15 261 | 2.7 MB | 39 / 0, 3 tiles | 0.41 | 0.007 | pass | 3.33 |
+| Bảo tàng Mỹ thuật | blocked at the input gate: wall height and roof form needed from the user | – | – | – | – | – | – | – | – |
+| Vietcombank Tower | AI massing rejected: `curtain_wall` given for single floors, not allowed by the schema | – | – | – | – | – | – | – | – |
+
+- 2 of 4 reached A3 without hand edits (baseline asks for 75 %): **fails** the completion criterion.
+- Both completed models pass the texture metrics (no sky, windows on the grid, seams under 6 ΔE); one passes the
+  M6 gate.
+- Judge scores (4.0 and 3.33) are lower than the dev set's; both models are coarse (4–6 parts).
+- Found and fixed after the run (branch `facade-root-causes`, not counted as held-out): a curtain wall named for one
+  floor band now becomes storefront glazing instead of failing the whole answer.
+- The input-gate block (Bảo tàng Mỹ thuật) is by design: no sourced wall height or roof form.
