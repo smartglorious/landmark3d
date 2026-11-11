@@ -149,8 +149,9 @@ def test_run_v2_bays_unique_and_qa(prj):
             from landmark3d.research import ai
             return ai.AIResult(json.dumps(replies.pop(0)), "fake", "m", [])
     res = autotex.run_v2(prj, Fake())
-    # 4 faces: the unique south face + 3 faces from the repeated bay, roof swatch, nothing dropped
-    assert res["unique_faces"] == 1 and res["bay_faces"] == 3 and res["swatches"] == 1 and res["dropped_by_qa"] == 0
+    # 4 faces: the unique south face + 3 faces from the repeated bay, roof swatch + wall swatch sampled from the
+    # face textures (the AI gave none for the wall), nothing dropped
+    assert res["unique_faces"] == 1 and res["bay_faces"] == 3 and res["swatches"] == 2 and res["dropped_by_qa"] == 0
     tx = [t for t in textures.load(prj)["textures"] if t.get("auto")]
     north = next(t for t in tx if t.get("kind") == "bays" and t["edge_index"] == 2)
     w, h = Image.open(prj.root / north["file"]).size

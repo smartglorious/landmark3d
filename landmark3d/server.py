@@ -458,7 +458,7 @@ def put_spec(pid: str, body: dict = Body(...)):
         raise HTTPException(400, "; ".join(errs[:6]))
     sp["estimated_triangles"] = spec_mod.estimate_triangles(sp)
     sp["issues"] = spec_mod.check_structure(sp["parts"], [tuple(p) for p in sp["footprint"]["local"]],
-                                            pipeline.merged_facts(prj))
+                                            pipeline.merged_facts(prj)) + pipeline.review_issues(sp)
     prj.write_json("spec/landmark_spec.json", sp)
     prj.log("spec edited by the user")
     pipeline.invalidate_from(prj, "spec_review", "plan edited: approve it again")
@@ -553,6 +553,59 @@ def run_observations(pid: str):
     prj.log("facade observations run from A2")
     pipeline.invalidate_from(prj, "spec_review", "facade observations changed: approve the plan again")
     return {"log": log, "errors": errors, "grid": report}
+
+
+@app.get("/api/projects/{pid}/cameras")
+def cameras_list(pid: str):
+    """Smart Texture T3: the texture photos with the state of their cameras."""
+    from .smarttex import run as st_run
+    return st_run.editor_list(_prj(pid))
+
+
+@app.get("/api/projects/{pid}/cameras/{k}")
+def camera_photo(pid: str, k: int):
+    """Editor view of photo k: undistorted image, wireframe and corners of the solved camera, hand-placed points,
+    a numbered model sketch, and the checks."""
+    from .smarttex import run as st_run
+    prj = _prj(pid)
+    if not prj.read_json("spec/landmark_spec.json"):
+        raise HTTPException(409, "no plan yet: build the plan first")
+    try:
+        return st_run.editor_photo(prj, k)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.put("/api/projects/{pid}/cameras/{k}")
+def camera_points(pid: str, k: int, body: dict = Body(...)):
+    """Save hand-placed corner points for photo k ({"points": {keypoint id: [u, v]}}, undistorted pixels) and solve
+    its camera from them. An empty set clears the hand-placed points."""
+    from .smarttex import run as st_run
+    prj = _prj(pid)
+    _refuse_if_running(pid)
+    pts = body.get("points") or {}
+    if not isinstance(pts, dict) or any(not isinstance(v, (list, tuple)) or len(v) != 2 for v in pts.values()):
+        raise HTTPException(400, "points must be {keypoint id: [x, y]}")
+    try:
+        return st_run.editor_solve(prj, k, {kid: (float(u), float(v)) for kid, (u, v) in pts.items()})
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/projects/{pid}/cameras/{k}/auto")
+def camera_auto(pid: str, k: int):
+    """The AI places the corner points of photo k itself (rough, then refined in zoomed crops) and the camera is
+    solved from them. The points stay editable."""
+    from .smarttex import run as st_run
+    prj = _prj(pid)
+    _refuse_if_running(pid)
+    provider = ai.get("vision")
+    if provider is None:
+        raise HTTPException(409, "no AI provider is available (sign in to the AI in Connections)")
+    try:
+        return st_run.auto_place(prj, k, provider)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.put("/api/projects/{pid}/budgets")

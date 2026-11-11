@@ -335,7 +335,10 @@ def texture_key(prj: Project, spec: dict) -> str:
         if s.get("kind") == "photo" and f is not None and f.is_file():
             row["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()
         rows.append(row)
-    key = json.dumps({"spec": spec_hash(spec), "sources": rows}, sort_keys=True, ensure_ascii=False)
+    cams = prj.root / "input" / "cameras.json"            # solved or hand-placed cameras change projected faces
+    key = json.dumps({"spec": spec_hash(spec), "sources": rows,
+                      "cameras": hashlib.sha256(cams.read_bytes()).hexdigest() if cams.is_file() else None},
+                     sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -461,17 +464,25 @@ For EACH part choose one mode:
   face and the four corners of the WHOLE face in a photo where it is straight-on and clear. Its other faces use the
   "bay" you also give, if any.
 - "none": not visible clearly enough anywhere (it keeps its plain material).
-Also give swatches for roof materials (a clean uniform rectangle of the roofing and its real width in metres):
+Also give swatches for these roof and wall materials (a clean, evenly lit, uniform rectangle of that surface only -
+no window, ornament, edge or shadow line - and its real width in metres); wall swatches cover the walls the photos
+do not show, so they must look like the real wall:
 {materials}
 Reply with one JSON object:
 {{"parts": [{{"id": "...", "mode": "bays|unique|none", "bay": {{"photo": n, "corners": [[x,y],[x,y],[x,y],[x,y]]}},
              "face": "<face id>", "face_photo": n, "face_corners": [[x,y],[x,y],[x,y],[x,y]]}}],
   "swatches": [{{"material": "<name>", "photo": n, "box": [x0, y0, x1, y1], "width_m": w}}]}}"""
 
-QA_PROMPT = """These are the facade textures just made for {name} (numbered 1 .. {n} on the contact sheet), each
-should look like a straight-on, clean elevation of one wall of the building. For each texture decide:
-- "keep": a clean elevation of this building's wall;
-- "drop": wrong region (sky, ground, another building, mostly roof), badly distorted, or mostly hidden.
+QA_PROMPT = """These are the facade textures just made for {name} (numbered 1 .. {n} on the contact sheet). Each cell
+shows, on the left, the source photo with the cropped area outlined in RED and, on the right, the straight-on
+texture made from it. Each texture must be a clean elevation of the model part named in its cell:
+{parts}
+For each texture decide:
+- "keep": the red outline covers that part's wall (its own height and floors), and the texture is a clean elevation;
+- "drop": the red outline is on a different block (a lower or higher neighbour, a tower stage, a roof, a gable, the
+  street), on sky or another building, the texture is badly distorted, or mostly hidden. Compare the outline with
+  the part's height and floors given above: a crop that shows the roofs of lower side blocks, or only part of the
+  part's height, is the wrong region.
 For kept textures, list horizontal spans hidden by trees, people, vehicles or poles as fractions of the width
 (e.g. [[0.0, 0.2]]); they will be repaired from the mirrored symmetric part.
 When only a horizontal BAND of the wall is clean (typically the upper wall above shop stalls, crowds, parked
@@ -514,10 +525,13 @@ def plan_v2(prj: Project, provider, spec: dict):
                                                                        if f['face'] in seen_in else " [not in photos]")
                                for f in faces[pid]))
     roofs = {}
-    for p in parts.values():
-        m = (p.get("material") or {}).get("roof")
-        if m and m in spec["materials"]:
-            roofs[m] = spec["materials"][m].get("srgb")
+    for p in spec["parts"]:                       # every enabled part: walls of untextured parts need swatches too
+        if p.get("enabled", True) is False:
+            continue
+        for slot in ("roof", "wall"):
+            m = (p.get("material") or {}).get(slot)
+            if m and m in spec["materials"] and m != "opening":
+                roofs[m] = spec["materials"][m].get("srgb")
     prompt = PROMPT_V2.format(name=prj.state()["name"], n=len(photos), parts="\n".join(lines),
                               materials=json.dumps(roofs))
 
@@ -543,13 +557,55 @@ def plan_v2(prj: Project, provider, spec: dict):
             if len(b) != 4 or not (b[0] < b[2] and b[1] < b[3]) or not (1 <= int(s.get("photo", 0)) <= len(photos)):
                 errs.append(f"bad swatch {s.get('material')}")
         return errs
-    obj, _ = ai.ask_json(provider, "You texture 3D building models from photos. Reply with one JSON object only.",
-                         prompt, validator=check, images=gridded, retries=2)
+    obj = _cached_answer(prj, "plan_ai.json", prompt, gridded, check)
+    if obj is None:
+        obj, _ = ai.ask_json(provider, "You texture 3D building models from photos. Reply with one JSON object only.",
+                             prompt, validator=check, images=gridded, retries=2)
+        _store_answer(prj, "plan_ai.json", prompt, gridded, obj)
     return obj, photos, {"parts": parts, "faces": faces}
 
 
-def build_v2(prj: Project, spec: dict, obj: dict, photos, ctx) -> list:
-    """Make the face textures: bay tiles repeated on every face of a part, plus rectified unique faces."""
+def _answer_key(prompt: str, images: list) -> str:
+    h = hashlib.sha256(prompt.encode("utf-8"))
+    for p in images:
+        h.update(Path(p).read_bytes())
+    return h.hexdigest()[:20]
+
+
+def _cached_answer(prj: Project, name: str, prompt: str, images: list, check):
+    """A stored AI answer for exactly this prompt and these images (reports/autotex/), if it still validates.
+    Lets the deterministic steps be re-run and compared without new AI calls."""
+    doc = prj.read_json(f"reports/autotex/{name}", None)
+    if not doc or doc.get("key") != _answer_key(prompt, images):
+        return None
+    obj = doc.get("answer")
+    return obj if isinstance(obj, dict) and not check(obj) else None
+
+
+def _store_answer(prj: Project, name: str, prompt: str, images: list, obj: dict) -> None:
+    prj.write_json(f"reports/autotex/{name}", {"key": _answer_key(prompt, images), "answer": obj})
+
+
+def _prepared_quad(prj: Project, path: str, corners, notes: list, label: str):
+    """(photo image, corners snapped to image lines) or (image, None) when the crop is too oblique to rectify."""
+    from .smarttex import quads
+    img = Image.open(prj.root / path)
+    img.load()
+    fixed, n = quads.refine_quad(img, corners)
+    obl = quads.obliqueness(fixed, img.size)
+    notes.append({"crop": label, "edges_snapped": n, "obliqueness": round(obl, 2)})
+    if obl > quads.OBLIQUE_MAX:
+        notes[-1]["dropped"] = f"too oblique ({obl:.2f} > {quads.OBLIQUE_MAX})"
+        return img, None
+    return img, fixed
+
+
+def build_v2(prj: Project, spec: dict, obj: dict, photos, ctx, notes: list | None = None) -> list:
+    """Make the face textures: bay tiles repeated on every face of a part, plus rectified unique faces. Crops are
+    snapped to image lines, oblique crops are rejected and bay tiles are rolled so the window is centred
+    (smarttex.quads); what happened to each crop is appended to notes."""
+    from .smarttex import quads
+    notes = notes if notes is not None else []
     items = []
     for q in obj.get("parts", []):
         pid, mode = q["id"], q.get("mode")
@@ -559,20 +615,69 @@ def build_v2(prj: Project, spec: dict, obj: dict, photos, ctx) -> list:
         fac = part.get("facade") or {}
         bay = max(1.0, float(fac.get("bay_spacing", 4.0)))
         h_px = int(min(512, max(64, float(part["height"]) * BAY_PX_PER_M)))
-        tile, tsrc = None, None
+        tile, tsrc, tpath, tcorners = None, None, None, None
+        note = _part_note(spec, part)
         if q.get("bay"):
             path, tsrc = photos[int(q["bay"]["photo"]) - 1]
-            tile = rectify(Image.open(prj.root / path), q["bay"]["corners"], int(max(16, bay * BAY_PX_PER_M)), h_px)
+            im, corners = _prepared_quad(prj, path, q["bay"]["corners"], notes, f"{pid} bay")
+            if corners is not None:
+                tpath, tcorners = path, corners
+                bay_px = int(max(16, bay * BAY_PX_PER_M))
+                # the AI's "bay" is often 1.3-1.7 real bays: cut exactly one real window period when one is clear
+                real, info = quads.best_bay_tile(im, corners, bay_px, h_px, rectify)
+                notes[-1]["real_bay"] = info
+                tile = real if real is not None else rectify(im, corners, bay_px, h_px)
+                tile, shift = quads.centre_bay(tile)
+                notes[-1]["window_shift"] = shift
         unique_face = q.get("face") if mode == "unique" else None
         for f in ctx["faces"][pid]:
             if f["face"] == unique_face:
                 path, src = photos[int(q["face_photo"]) - 1]
+                im, corners = _prepared_quad(prj, path, q["face_corners"], notes, f"{f['face']} unique")
+                if corners is None:
+                    continue
                 w = int(min(TEX_MAX_W, max(64, f["length_m"] * BAY_PX_PER_M)))
-                img = rectify(Image.open(prj.root / path), q["face_corners"], w, h_px)
-                items.append({"face": f, "img": img, "src": src, "kind": "unique"})
+                items.append({"face": f, "img": rectify(im, corners, w, h_px), "src": src, "kind": "unique",
+                              "src_path": path, "corners": corners, "part_note": note})
             elif tile is not None:
-                items.append({"face": f, "img": tile_face(tile, f["n_bays"], h_px), "src": tsrc, "kind": "bays"})
+                items.append({"face": f, "img": tile_face(tile, f["n_bays"], h_px), "src": tsrc, "kind": "bays",
+                              "src_path": tpath, "corners": tcorners, "part_note": note})
     return items
+
+
+def _part_note(spec: dict, part: dict) -> str:
+    """How tall the part is, its floors, and where it sits among the others (for the AI texture check)."""
+    fac = part.get("facade") or {}
+    h = float(part["height"])
+    zb = float(part.get("base_z", 0))
+    lh = float(fac.get("level_height") or 0)
+    tops = sorted(float(p.get("base_z", 0)) + float(p["height"]) for p in spec["parts"]
+                  if p.get("enabled", True) is not False)
+    floors = f", {max(1, round(h / lh))} floor(s)" if lh > 0 else ""
+    base = f", standing on another part at {zb:g} m" if zb > 0.5 else ""
+    return (f"wall {h:g} m high{floors}{base}; top at {zb + h:g} m "
+            f"(the building's parts top out between {tops[0]:g} and {tops[-1]:g} m)")
+
+
+def auto_qa_v2(items: list, notes: list) -> list:
+    """Deterministic checks before the AI look: sky is trimmed off the top (or the texture dropped), roof and gable
+    slopes are dropped. Each decision is appended to notes."""
+    from .smarttex import quads
+    kept, seen = [], {}
+    for it in items:
+        key = id(it["img"]) if it["kind"] == "unique" else (it["face"]["part"], "bays")
+        if key not in seen:
+            seen[key] = quads.auto_qa(it["img"])
+            if seen[key][0] != "keep":
+                notes.append({"texture": it["face"]["face"] if it["kind"] == "unique" else f"{it['face']['part']} bays",
+                              "auto_qa": seen[key][0], "why": seen[key][1]})
+        verdict, _, top = seen[key]
+        if verdict == "drop":
+            continue
+        if verdict == "trim":
+            it["img"], it["face"] = crop_band(it["img"], it["face"], (top, 1.0))
+        kept.append(it)
+    return kept
 
 
 def qa_v2(prj: Project, provider, items: list) -> list:
@@ -589,16 +694,24 @@ def qa_v2(prj: Project, provider, items: list) -> list:
         it["_rep"] = key_of[key]
     cells = []
     for k, it in enumerate(reps, start=1):
+        cell = Image.new("RGB", (720, 300), "white")
+        if it.get("src_path") and it.get("corners"):            # the source photo with the crop outlined
+            ph = Image.open(prj.root / it["src_path"]).convert("RGB")
+            W0, H0 = ph.size
+            ph.thumbnail((400, 270))
+            sx, sy = ph.width / W0, ph.height / H0
+            ImageDraw.Draw(ph).polygon([(x * W0 * sx, y * H0 * sy) for x, y in it["corners"]], outline=(255, 0, 0),
+                                       width=3)
+            cell.paste(ph, (0, 28))
         im = it["img"].copy()
-        im.thumbnail((480, 240))
-        cell = Image.new("RGB", (480, 270), "white")
-        cell.paste(im, ((480 - im.width) // 2, 28))
+        im.thumbnail((300, 270))
+        cell.paste(im, (410 + (300 - im.width) // 2, 28))
         ImageDraw.Draw(cell).text((6, 4), f"{k}  ({it['face']['part']})", fill="black", font=_font(18))
         cells.append(cell)
-    cols = 3
-    sheet = Image.new("RGB", (480 * cols, 270 * ((len(cells) + cols - 1) // cols)), "white")
+    cols = 2
+    sheet = Image.new("RGB", (720 * cols, 300 * ((len(cells) + cols - 1) // cols)), "white")
     for i, c in enumerate(cells):
-        sheet.paste(c, ((i % cols) * 480, (i // cols) * 270))
+        sheet.paste(c, ((i % cols) * 720, (i // cols) * 300))
     path = prj.root / "reports" / "autotex" / "qa_sheet.jpg"
     path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(path, "JPEG", quality=88)
@@ -609,13 +722,18 @@ def qa_v2(prj: Project, provider, items: list) -> list:
             return ["textures list required"]
         return [f"bad entry {t}" for t in ts if not (1 <= int(t.get("n", 0)) <= len(reps))
                 or t.get("verdict") not in ("keep", "drop")]
-    try:
-        obj, _ = ai.ask_json(provider, "You check textures for a 3D building model. Reply with one JSON object only.",
-                             QA_PROMPT.format(name=prj.state()["name"], n=len(reps)), validator=check,
-                             images=[path], retries=1)
-    except Exception as exc:
-        prj.log("texture QA failed - all textures kept", {"error": str(exc)[:200]})
-        return items
+    prompt = QA_PROMPT.format(name=prj.state()["name"], n=len(reps), parts=chr(10).join(
+        f"- {k}: {it['face']['part']}" + (f" - {it['part_note']}" if it.get("part_note") else "")
+        for k, it in enumerate(reps, start=1)))
+    obj = _cached_answer(prj, "qa_ai.json", prompt, [path], check)
+    if obj is None:
+        try:
+            obj, _ = ai.ask_json(provider, "You check textures for a 3D building model. Reply with one JSON object only.",
+                                 prompt, validator=check, images=[path], retries=1)
+        except Exception as exc:
+            prj.log("texture QA failed - all textures kept", {"error": str(exc)[:200]})
+            return items
+        _store_answer(prj, "qa_ai.json", prompt, [path], obj)
     verdict = {int(t["n"]) - 1: t for t in obj["textures"]}
     kept = []
     for it in items:
@@ -693,8 +811,46 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
         entries.append({"id": f"TX-AF-{k:02d}", "auto": True, "file": rel, "size": list(img.size), "mode": "panel",
                         "part": f["part"], "side": f"face{f['edge_index']}", "edge_index": f["edge_index"],
                         "z0": f["z0"], "z1": f["z1"], "licence": src.get("licence"), "author": src.get("author", ""),
-                        "source_id": src.get("id"), "material": None, "tint": None, "crop": None, "kind": it["kind"]})
-    for k, s in enumerate(plan_obj.get("swatches", []), start=1):
+                        "source_id": src.get("id"), "material": None, "tint": None, "crop": None, "kind": it["kind"],
+                        **({"generated": True} if it["kind"] == "generated" else {})})
+    entries += _swatches_v2(prj, spec, [dict(it, img=im) for it, im in zip(items, imgs)], plan_obj, photos,
+                            manual_mats, rejected)              # sample the colour-corrected faces, as saved
+    prj.write_json("input/textures.json", {"textures": manual + entries, "auto_for": h})
+    from .detail import materials as detail_materials
+    dens: dict = {}
+    for it in items:
+        length = float(it["face"].get("length_m") or 0)
+        if length > 0 and it["img"].width > 0:
+            dens.setdefault(it["face"]["part"], []).append(detail_materials.texel_density(it["img"].width, length))
+    res = {"generated_faces": sum(1 for it in items if it["kind"] == "generated"),
+           "projected_faces": sum(1 for it in items if it["kind"] == "projected"),
+           "bay_faces": sum(1 for it in items if it["kind"] == "bays"),
+           "unique_faces": sum(1 for it in items if it["kind"] == "unique"),
+           "swatches": sum(1 for e in entries if e["mode"] == "repeat")}
+    if rejected:
+        res["rejected"] = rejected
+    texel = detail_materials.texel_warnings(dens)
+    if texel:
+        res["texel_warnings"] = texel
+    return res
+
+
+def _swatches_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, manual_mats: set,
+                 rejected: list) -> list:
+    """Repeat textures per material. Candidates: the AI's swatch boxes (if their colour matches), plain areas of the
+    kept face textures (walls), and plain areas of the band just above each wall crop (roofs). The plainest
+    candidate wins (least large-scale structure), and is flattened and made periodic (smarttex.quads.seamless)."""
+    from .smarttex import quads
+    parts = {p["id"]: p for p in spec["parts"]}
+    cands: dict = {}
+
+    def add(mat, img, world_m, src, origin):
+        if img is None:
+            return
+        a = np.asarray(img.convert("RGB").resize((128, 128)))
+        cands.setdefault(mat, []).append((quads.structure(a), img, world_m, src, origin))
+
+    for s in plan_obj.get("swatches", []):
         if s.get("material") in manual_mats or s.get("material") not in spec["materials"]:
             continue
         path, src = photos[int(s["photo"]) - 1]
@@ -708,46 +864,115 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
         if not ok:
             rejected.append(f"swatch {s['material']}: colour off by {dist} - not that material")
             continue
-        side = min(512, max(crop.width, crop.height))
-        tile = make_tileable(crop.resize((side, max(24, int(side * crop.height / crop.width)))))
+        add(s["material"], crop, float(s.get("width_m", 3)), src, "ai box")
+    walls: dict = {}
+    for it in items:
+        m = ((parts.get(it["face"]["part"]) or {}).get("material") or {}).get("wall")
+        if m and m not in manual_mats and m in spec["materials"]:
+            walls.setdefault(m, []).append(it)
+    for m, its in walls.items():
+        patch, _ = quads.plain_patch([it["img"] for it in its], spec["materials"][m]["srgb"])
+        if patch is not None:
+            add(m, patch, patch.width / BAY_PX_PER_M, its[0]["src"], "face textures")
+    seen = set()
+    for it in items:
+        part = parts.get(it["face"]["part"]) or {}
+        m = (part.get("material") or {}).get("roof")
+        key = (it.get("src_path"), json.dumps(it.get("corners")))
+        if not m or m in manual_mats or m not in spec["materials"] or not it.get("corners") or key in seen:
+            continue
+        seen.add(key)
+        band = quads.roof_region(Image.open(prj.root / it["src_path"]), it["corners"])
+        if band is None:
+            continue
+        edge_m = (float((part.get("facade") or {}).get("bay_spacing", 4.0)) if it["kind"] == "bays"
+                  else float(it["face"].get("length_m") or 4.0))
+        patch, _ = quads.plain_patch([band], spec["materials"][m]["srgb"], sizes=(96, 64, 48))
+        if patch is not None:
+            add(m, patch, patch.width / max(band.width / max(edge_m, 0.5), 1e-6), it["src"], "above the wall top")
+    entries = []
+    for k, (m, cs) in enumerate(sorted(cands.items()), start=1):
+        st, img, world_m, src, origin = min(cs, key=lambda c: c[0])
+        if st > quads.STRUCTURE_MAX:          # a swatch with ridges, edges or windows repeats visibly: plain colour wins
+            rejected.append(f"swatch {m}: best sample ({origin}) has structure {st:.1f} > {quads.STRUCTURE_MAX}")
+            continue
+        tile = quads.seamless(img)
         rel = f"input/textures/auto_swatch_{k:02d}.jpg"
         tile.save(prj.root / rel, "JPEG", quality=90)
         entries.append({"id": f"TX-AS-{k:02d}", "auto": True, "file": rel, "size": list(tile.size), "mode": "repeat",
-                        "material": s["material"], "world_size_m": round(float(s.get("width_m", 3)), 2), "tint": None,
+                        "material": m, "world_size_m": round(max(0.5, world_m), 2), "tint": None,
                         "licence": src.get("licence"), "author": src.get("author", ""), "source_id": src.get("id"),
-                        "part": None, "side": None, "z0": None, "z1": None, "crop": None})
-    prj.write_json("input/textures.json", {"textures": manual + entries, "auto_for": h})
-    from .detail import materials as detail_materials
-    dens: dict = {}
-    for it in items:
-        length = float(it["face"].get("length_m") or 0)
-        if length > 0 and it["img"].width > 0:
-            dens.setdefault(it["face"]["part"], []).append(detail_materials.texel_density(it["img"].width, length))
-    res = {"bay_faces": sum(1 for it in items if it["kind"] == "bays"),
-           "unique_faces": sum(1 for it in items if it["kind"] == "unique"),
-           "swatches": sum(1 for e in entries if e["mode"] == "repeat")}
-    if rejected:
-        res["rejected"] = rejected
-    texel = detail_materials.texel_warnings(dens)
-    if texel:
-        res["texel_warnings"] = texel
-    return res
+                        "part": None, "side": None, "z0": None, "z1": None, "crop": None, "from": origin,
+                        "structure": round(st, 2)})
+    for m in sorted({((p.get("material") or {}).get(slot)) for p in spec["parts"] for slot in ("wall", "roof")}
+                    - set(cands) - manual_mats - {None, "opening"}):  # no candidate at all
+        if m in spec["materials"]:
+            rejected.append(f"no swatch for {m}: no plain area of that colour found")
+    return entries
+
+
+def _generated_items(prj: Project, spec: dict, obj: dict, photos, items: list, notes: list) -> list:
+    from . import settings as settings_mod
+    from .smarttex import genfacade
+    if not settings_mod.load().get("generated_textures", True) or not genfacade.codex_cli() or not photos:
+        return []
+    keep = {(it["face"]["part"], it["face"]["edge_index"]) for it in items if it["kind"] in ("projected", "unique")}
+    parts = {p["id"]: p for p in spec["parts"] if p.get("enabled", True) is not False and p.get("facade")
+             and not geom.is_tapered(p.get("taper")) and (p.get("facade") or {}).get("opening_type") != "curtain_wall"
+             and float(p["height"]) >= 3}
+    chosen = {q["id"]: q for q in (obj or {}).get("parts", [])}
+
+    def refs_for(pid):
+        out = []
+        q = chosen.get(pid) or {}
+        for key in ("bay", None):
+            n = (q.get("bay") or {}).get("photo") if key == "bay" else q.get("face_photo")
+            if n and 1 <= int(n) <= len(photos):
+                out.append(photos[int(n) - 1][0])
+        out += [p for p, _ in photos]
+        return list(dict.fromkeys(out))
+    return genfacade.items_for(prj, spec, parts, refs_for, keep, notes)
 
 
 def run_v2(prj: Project, provider) -> dict:
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = texture_key(prj, spec) + "-v3"
+    h = texture_key(prj, spec) + "-v13"
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
-    obj, photos, ctx = plan_v2(prj, provider, spec)
-    if obj is None:
-        return {"skipped": "no photo whose licence allows texture use"}
-    items = build_v2(prj, spec, obj, photos, ctx)
+    from .smarttex import bake, quads
+    if provider is None:                     # no AI: only faces covered by solved cameras can be textured
+        obj, photos, ctx = {"parts": [], "swatches": []}, _texture_photos(prj, spec), {"parts": {}, "faces": {}}
+        if not photos:
+            return {"skipped": "no photo whose licence allows texture use"}
+    else:
+        obj, photos, ctx = plan_v2(prj, provider, spec)
+        if obj is None:
+            return {"skipped": "no photo whose licence allows texture use"}
+    notes: list = []
+    items = build_v2(prj, spec, obj, photos, ctx, notes)
     n_before = len(items)
-    items = qa_v2(prj, provider, items)
+    items = auto_qa_v2(items, notes)
+    n_auto = len(items)
+    items = qa_v2(prj, provider, items) if provider is not None else items
+    n_qa = len(items)
+    # T5: faces that solved photo cameras cover are textured by projection, which replaces the AI crops there
+    projected = bake.project_items(prj, spec, notes, provider)
+    done = {(it["face"]["part"], it["face"]["edge_index"]) for it in projected}
+    items = [it for it in items if (it["face"]["part"], it["face"]["edge_index"]) not in done] + projected
+    # Generated facades (Codex image generation): every remaining face that is not a projected or a unique photo
+    # face gets a clean elevation in the building's style with windows on the model's grid; it replaces bay crops
+    generated = _generated_items(prj, spec, obj, photos, items, notes)
+    gdone = {(it["face"]["part"], it["face"]["edge_index"]) for it in generated}
+    items = [it for it in items if (it["face"]["part"], it["face"]["edge_index"]) not in gdone] + generated
+    quads.match_part_colours(items)
     res = apply_v2(prj, spec, items, obj, photos, h)
-    res["dropped_by_qa"] = n_before - len(items)
+    res["dropped_by_auto_qa"] = n_before - n_auto
+    res["dropped_by_qa"] = n_auto - n_qa
+    res["projected_faces"] = len(projected)
+    res["crops_snapped"] = sum(1 for n in notes if n.get("edges_snapped"))
+    res["crops_too_oblique"] = sum(1 for n in notes if "dropped" in n)
+    prj.write_json("reports/autotex/notes.json", {"notes": notes, "result": res})
     prj.log("auto textures", res)
     return res

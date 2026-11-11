@@ -14,7 +14,8 @@ from PIL import Image
 
 from .project import Project
 
-TEXTURE_LICENCES = {"owned", "permission_granted", "public_domain", "cc_by", "cc_by_sa", "cc_by_nc"}
+TEXTURE_LICENCES = {"owned", "permission_granted", "public_domain", "cc_by", "cc_by_sa", "cc_by_nc",
+                    "ai_generated"}          # ai_generated: drawn by an image model, labelled as such
 SIDES = ["north", "south", "east", "west", "all"]
 
 
@@ -106,6 +107,11 @@ def remove(prj: Project, tid: str) -> bool:
 
 
 # ----------------------------------------------------------------------------- atlas packing
+# Gutter around every atlas cell, filled with the cell's own edge pixels: 8 px survives the three mip levels that matter
+# at standard viewing distances (detail.materials.padding_ok; plan M5 task 4, baseline 5.4).
+ATLAS_PADDING_PX = 8
+
+
 def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048) -> tuple[str | None, dict]:
     """Shelf-pack the panel images (with crops) into one JPEG atlas. Returns (atlas path, {id: [u0, v0, u1, v1]})."""
     if not panels:
@@ -120,19 +126,19 @@ def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048) -> tuple[s
         imgs.append((t["id"], im))
     scale = 1.0
     for _ in range(12):
-        x, y, row_h, ok = 0, 0, 0, True
-        width = max_px
+        x, y, row_h, ok = ATLAS_PADDING_PX, ATLAS_PADDING_PX, 0, True
+        width = max_px - ATLAS_PADDING_PX
         cells = []
         for tid, im in sorted(imgs, key=lambda p: -p[1].size[1]):
             w = max(8, int(min(im.size[0], max_px // 2) * scale))
             h = max(8, int(im.size[1] * w / im.size[0]))
             if x + w > width:
-                x, y, row_h = 0, y + row_h + 2, 0
-            if y + h > max_px:
+                x, y, row_h = ATLAS_PADDING_PX, y + row_h + 2 * ATLAS_PADDING_PX, 0
+            if y + h > max_px - ATLAS_PADDING_PX:
                 ok = False
                 break
             cells.append((tid, im, x, y, w, h))
-            x += w + 2
+            x += w + 2 * ATLAS_PADDING_PX
             row_h = max(row_h, h)
         if ok:
             break
@@ -143,12 +149,23 @@ def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048) -> tuple[s
         while p < n:
             p *= 2
         return min(p, max_px)
-    aw = pow2(max(x + w for _, _, x, _, w, _ in cells))
-    ah = pow2(max(y + h for _, _, _, y, _, h in cells))
+    aw = pow2(max(x + w for _, _, x, _, w, _ in cells) + ATLAS_PADDING_PX)
+    ah = pow2(max(y + h for _, _, _, y, _, h in cells) + ATLAS_PADDING_PX)
     atlas = Image.new("RGB", (aw, ah), (255, 255, 255))
     uv = {}
+    pad = ATLAS_PADDING_PX
     for tid, im, x, y, w, h in cells:
-        atlas.paste(im.resize((w, h), Image.LANCZOS), (x, y))
+        cell = im.resize((w, h), Image.LANCZOS)
+        # bleed: the cell's own edge pixels fill its gutter, so mip levels never average in a neighbour or white
+        bleed = Image.new("RGB", (w + 2 * pad, h + 2 * pad))
+        bleed.paste(cell, (pad, pad))
+        bleed.paste(cell.crop((0, 0, w, 1)).resize((w, pad)), (pad, 0))
+        bleed.paste(cell.crop((0, h - 1, w, h)).resize((w, pad)), (pad, h + pad))
+        left = bleed.crop((pad, 0, pad + 1, h + 2 * pad)).resize((pad, h + 2 * pad))
+        right = bleed.crop((pad + w - 1, 0, pad + w, h + 2 * pad)).resize((pad, h + 2 * pad))
+        bleed.paste(left, (0, 0))
+        bleed.paste(right, (w + pad, 0))
+        atlas.paste(bleed, (x - pad, y - pad))
         inset = 1
         uv[tid] = [(x + inset) / aw, 1 - (y + h - inset) / ah, (x + w - inset) / aw, 1 - (y + inset) / ah]
     out = prj.path("output", "panel_atlas.jpg")
@@ -169,6 +186,10 @@ def build_job(prj: Project, max_px: int = 2048) -> tuple[dict, list, str | None]
         elif t["mode"] == "panel":
             panels.append(t)
     atlas, uv = pack_panels(prj, panels, max_px)
+    # generated facades follow the model's own bay grid, so they skin the real wall mesh (relief kept); photo panels
+    # follow the photo, so they stay in front of the wall and replace the modelled detail
     job_panels = [{"id": t["id"], "part": t["part"], "side": t["side"], "z0": t.get("z0"), "z1": t.get("z1"),
-                   "edge_index": t.get("edge_index"), "uv": uv[t["id"]]} for t in panels if t["id"] in uv]
+                   "edge_index": t.get("edge_index"), "uv": uv[t["id"]],
+                   **({"skin": True} if t.get("generated") and t.get("edge_index") is not None else {})}
+                  for t in panels if t["id"] in uv]
     return repeat, job_panels, atlas

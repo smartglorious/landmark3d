@@ -9,3 +9,10 @@ def no_satellite_network(monkeypatch):
     def offline(*a, **k):
         raise RuntimeError("network disabled in tests")
     monkeypatch.setattr(satellite, "fetch_esri", offline)
+
+
+@pytest.fixture(autouse=True)
+def no_image_generation(monkeypatch):
+    """Tests never call the real Codex image generator; generated-texture tests pass a fake one."""
+    from landmark3d.smarttex import genfacade
+    monkeypatch.setattr(genfacade, "codex_cli", lambda: None)

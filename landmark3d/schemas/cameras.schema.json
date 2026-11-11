@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "landmark3d/cameras/v1",
+  "title": "Solved photo cameras (input/cameras.json)",
+  "description": "One entry per texture-licensed reference photo. Cameras are pinhole cameras for the undistorted image (principal point at the centre), in the spec's local frame (metres, x east, y north, z up); pose is world -> camera (OpenCV: x right, y down, z forward).",
+  "type": "object",
+  "required": ["version", "spec_hash", "photos"],
+  "properties": {
+    "version": {"const": 1},
+    "spec_hash": {"type": "string"},
+    "written": {"type": "string"},
+    "photos": {"type": "array", "items": {"$ref": "#/$defs/photo"}}
+  },
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "photo": {
+      "type": "object",
+      "required": ["source_id", "path", "status"],
+      "properties": {
+        "source_id": {"type": ["string", "null"]},
+        "path": {"type": "string"},
+        "photo": {"type": "integer", "minimum": 1},
+        "status": {"enum": ["solved", "failed", "skipped", "manual"]},
+        "why": {"type": "string"},
+        "projection": {"enum": ["pinhole", "panorama"]},
+        "lens": {"type": "object"},
+        "undistorted": {"type": "string"},
+        "camera": {
+          "type": "object",
+          "required": ["width", "height", "f", "rvec", "tvec"],
+          "properties": {
+            "width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1},
+            "f": {"type": "number", "exclusiveMinimum": 0},
+            "rvec": {"$ref": "#/$defs/vec3"}, "tvec": {"$ref": "#/$defs/vec3"}, "centre": {"$ref": "#/$defs/vec3"}
+          }
+        },
+        "keypoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "uv", "source"],
+            "properties": {
+              "id": {"type": "string"}, "xyz": {"$ref": "#/$defs/vec3"},
+              "uv": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+              "source": {"enum": ["coarse", "snapped", "snapped_1", "manual", "m7"]},
+              "weight": {"type": "number"}, "error_px": {"type": "number"}
+            }
+          }
+        },
+        "metrics": {"type": "object"},
+        "gate": {"type": "array", "items": {"type": "string"}},
+        "overlay": {"type": "string"}
+      }
+    }
+  }
+}

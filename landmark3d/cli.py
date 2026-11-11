@@ -1,4 +1,4 @@
-"""Command line: python -m landmark3d [serve|setup|doctor|new|run|status|approve]"""
+"""Command line: python -m landmark3d [serve|setup|doctor|new|run|status|approve|cameras|texture-metrics|refit-plan]"""
 from __future__ import annotations
 
 import argparse
@@ -25,6 +25,13 @@ def main(argv=None):
     a.add_argument("project")
     a.add_argument("phase")
     a.add_argument("--changes", default=None, help="request changes with this note instead of approving")
+    cm = sub.add_parser("cameras", help="Smart Texture T2: solve photo cameras (AI keypoints) -> input/cameras.json")
+    cm.add_argument("project")
+    cm.add_argument("--photo", type=int, action="append", help="only this photo number (repeatable)")
+    rf = sub.add_parser("refit-plan", help="fit the spec's volumes to the measured footprint (goes back to A2)")
+    rf.add_argument("project")
+    tq = sub.add_parser("texture-metrics", help="Smart Texture T0: metrics of the current automatic textures")
+    tq.add_argument("project")
     args = ap.parse_args(argv)
 
     if args.cmd == "serve":
@@ -53,6 +60,14 @@ def main(argv=None):
             print(f"{pid:15s} {ph['status']:18s} {ph['message']}")
         if stt.get("missing"):
             print("missing:", ", ".join(i["id"] for i in stt["missing"]))
+    elif args.cmd == "cameras":
+        from .smarttex import run as st_run
+        print(json.dumps(st_run.run(Project(args.project), only=args.photo), ensure_ascii=False))
+    elif args.cmd == "refit-plan":
+        print(json.dumps(pipeline.refit_plan(Project(args.project)), ensure_ascii=False))
+    elif args.cmd == "texture-metrics":
+        from .smarttex import metrics as st_metrics
+        print(json.dumps(st_metrics.texture_report(Project(args.project))["summary"], ensure_ascii=False))
     elif args.cmd == "approve":
         prj = Project(args.project)
         try:

@@ -177,6 +177,7 @@ def build_spec(prj: Project) -> dict:
     photos_used = []
     ai_error = None
     quality = None
+    fit_report = None
     provider = ai.get("spec")
     if provider is not None:
         photos, seen = [], set()
@@ -236,6 +237,14 @@ def build_spec(prj: Project) -> dict:
                 massing, review_log = photo_review(prj, provider, massing, photos, massing_check, main, materials,
                                                    st, rounds, sat_imgs)
                 normalise_glass(massing)
+            # The AI reads positions and sizes off a satellite image; its plan is fitted to the measured footprint
+            # (whole model, then each ground volume), kept only where plan IoU improves without new structure errors
+            from . import plan_fit
+            fitted, fit_report = plan_fit.fit(massing["parts"], main,
+                                              lambda ps: spec_mod.structure_errors(ps + parts[1:], main, facts))
+            if fit_report["iou_after"] > fit_report["iou_before"]:
+                massing = dict(massing, parts=fitted)
+            prj.log("plan fitted to the footprint", fit_report)
             use_judge = bool(photos) and settings_mod.load().get("judge", True)
             if use_judge:
                 quality = judge(prj, provider, massing, photos, sat_imgs, main, materials, st)
@@ -323,6 +332,7 @@ def build_spec(prj: Project) -> dict:
         "defaults_used": defaults_used,
         "notes": ai_notes,
         "photo_review": review_log,
+        "plan_fit": fit_report,
         "quality": quality,
         "photo_triage": triage_log if provider is not None else [],
         "photos": photos_used,                      # "photo n" in views / renders = photos[n-1]
@@ -339,7 +349,7 @@ def build_spec(prj: Project) -> dict:
     if errs:
         raise RuntimeError("spec invalid: " + "; ".join(errs[:5]))
     spec["estimated_triangles"] = spec_mod.estimate_triangles(spec)
-    spec["issues"] = spec_mod.check_structure(spec["parts"], main, facts)
+    spec["issues"] = spec_mod.check_structure(spec["parts"], main, facts) + review_issues(spec)
     if ai_error:
         # An AI is configured but did not answer (quota, sign-in, network): the plan is only the fallback. Block A2
         # so a degraded model is never approved by accident; rerun the spec later, or turn the AI off to go on.
@@ -1025,7 +1035,27 @@ def spec_blocking_issues(prj: Project) -> list[dict]:
     facts = merged_facts(prj)
     issues = spec_mod.check_structure(sp["parts"], [tuple(p) for p in sp["footprint"]["local"]], facts)
     issues += [i for i in sp.get("issues", []) if i.get("code") == "ai_failed"]
+    issues += unknown_material_issues(sp)
     return [i for i in issues if i["severity"] == "error"]
+
+
+def review_issues(spec: dict) -> list[dict]:
+    """Issues shown with the plan at A2 and A3 besides the structure check: unknown materials (blocking) and generated
+    components (marked as generated, never observed)."""
+    from . import generative
+    return unknown_material_issues(spec) + generative.review_items(spec)
+
+
+def unknown_material_issues(spec: dict) -> list[dict]:
+    """A part or feature that names a material the spec does not define would be drawn with a fallback colour by the
+    builder. That is a blocking issue, not a silent fallback (plan M2 geometry requirements)."""
+    defined = set(spec.get("materials") or {}) | set(spec_mod.DEFAULT_MATERIALS)
+    out = []
+    for m in sorted(used_materials(spec) - defined):
+        out.append({"code": "unknown_material", "severity": "error",
+                    "message": f"material '{m}' is used by a part but not defined; define it or map the part to an "
+                               f"existing material"})
+    return out
 
 
 def spec_mod_parse(v):
@@ -1117,18 +1147,18 @@ def _run_phase(prj: Project, phase: str) -> str:
         elif phase == "build":
             prj.path("reports", "build_manifest.json").unlink(missing_ok=True)   # a new build replaces the old manifest
             if settings_mod.load().get("auto_textures", True):
-                provider = ai.get("vision")
-                if provider is not None:
-                    try:
-                        from . import autotex
-                        autotex.run_v2(prj, provider)
-                    except Exception as exc:          # textures are an enhancement: never block the build
-                        prj.log("auto textures failed", {"error": str(exc)[:300]})
+                provider = ai.get("vision")           # without AI, faces covered by solved cameras are still projected
+                try:
+                    from . import autotex
+                    autotex.run_v2(prj, provider)
+                except Exception as exc:              # textures are an enhancement: never block the build
+                    prj.log("auto textures failed", {"error": str(exc)[:300]})
             res = engine_runner.build(prj)
             if res.get("ok"):
                 prj.set_phase(phase, "done", f"{res['triangles']} triangles, {res['bytes']} bytes, "
                                              f"{len(res.get('renders', []))} renders")
                 write_build_manifest(prj)
+                write_quality(prj, res)
             else:
                 prj.set_phase(phase, "failed", "; ".join(res.get("errors", ["build failed"]))[:500])
         elif phase == "release":
@@ -1247,6 +1277,36 @@ def build_identity(prj: Project) -> dict:
     }
 
 
+def write_quality(prj: Project, result: dict) -> dict:
+    """Deterministic metrics of a finished build, their inputs and version, the hard gate and the baseline thresholds
+    (plan M6). Written next to the build result so a later build can be compared with it."""
+    from . import quality
+    sp = prj.read_json("spec/landmark_spec.json", {}) or {}
+    m = quality.metrics(result, sp)
+    try:
+        from . import facade_grid, observe as observe_mod
+        obs = (observe_mod.load(prj) or {}).get("observations", [])
+        align = facade_grid.alignment(sp, obs) if obs else None
+    except (OSError, ValueError, KeyError, TypeError):
+        align = None
+    m["floor_line_match"] = align["floor_line_match"] if align else None
+    m["bay_line_match"] = align["bay_line_match"] if align else None
+    rep = {"metrics": m, "gate": quality.gate(m, sp), "baseline": quality.evaluate(m),
+           "grid_alignment": align,
+           "digest": quality.score_digest(m)}
+    prj.write_json("reports/quality.json", rep)
+    return rep
+
+
+def quality_blocking_issues(prj: Project) -> list[dict]:
+    """With the detail engine on, the deterministic gate is the primary keep/reject signal: its problems block the
+    build approval. With the flag off it is reported only, so version 1 projects keep their workflow."""
+    if not settings_mod.load().get("detail_engine_v2", False):
+        return []
+    rep = prj.read_json("reports/quality.json") or {}
+    return [{"code": "quality_gate", "severity": "error", "message": p} for p in rep.get("gate", [])]
+
+
 def write_build_manifest(prj: Project) -> dict:
     manifest = {"identity": build_identity(prj), "written": time.strftime("%Y-%m-%dT%H:%M:%S")}
     prj.write_json("reports/build_manifest.json", manifest)
@@ -1275,6 +1335,8 @@ def approve(prj: Project, phase: str, decision: str, notes: str = "") -> dict:
         raise ApprovalError(f"{phase} is {status}, not waiting for approval")
     if decision == "approved" and phase in ("spec_review", "build_review"):
         blocking = spec_blocking_issues(prj)
+        if phase == "build_review":
+            blocking += quality_blocking_issues(prj)
         if blocking:
             raise SpecIssues(blocking)
     prj.update_state(lambda s: s["approvals"].append({"phase": phase, "decision": decision, "notes": notes,
@@ -1365,3 +1427,22 @@ def submit_inputs(prj: Project, values: dict) -> list:
     if not items and prj.state()["phases"]["completion"]["status"] == "blocked":
         prj.set_phase("completion", "pending", "user data received")
     return items
+
+
+def refit_plan(prj: Project) -> dict:
+    """Fit the current spec's volumes to the measured footprint (plan_fit), save it, and send the plan back to A2
+    for approval when anything changed. Returns the fit report."""
+    from . import plan_fit
+    spec = prj.read_json("spec/landmark_spec.json")
+    if not spec:
+        raise RuntimeError("no spec")
+    main = [tuple(p) for p in spec["footprint"]["local"]]
+    fitted, rep = plan_fit.fit(spec["parts"], main, lambda ps: spec_mod.structure_errors(ps, main))
+    if rep["iou_after"] > rep["iou_before"]:
+        spec["parts"] = fitted
+        spec["plan_fit"] = rep
+        prj.write_json("spec/landmark_spec.json", spec)
+        invalidate_from(prj, "spec_review", f"plan fitted to the footprint: IoU {rep['iou_before']} -> "
+                                            f"{rep['iou_after']}; approve the plan again")
+    prj.log("plan fitted to the footprint", rep)
+    return rep

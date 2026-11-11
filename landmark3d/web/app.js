@@ -30,6 +30,176 @@ function route() {
 }
 window.addEventListener('hashchange', route);
 
+// ---------------------------------------------------------------- T3: camera editor (Smart Texture)
+// Each texture photo, undistorted, with the solved camera's model wireframe on top. The owner puts model corners
+// where they really are in the photo; the camera is solved again from those points and the checks are shown.
+const camState = {};
+
+function renderCameras(id, d) {
+  const box = document.getElementById('cameras');
+  if (!box) return;
+  if (!d.spec) { box.innerHTML = '<h2>Camera ảnh</h2><p class="muted">Cần có spec trước.</p>'; return; }
+  box.innerHTML = `<h2>Camera ảnh <span class="muted">(Smart Texture: đặt góc nhà đúng chỗ trên ảnh)</span></h2>
+    <p class="muted">Mỗi ảnh texture có một camera. Chọn một góc của mô hình, bấm vào đúng chỗ của góc đó trên ảnh, rồi
+    bấm "Giải camera". Cần ít nhất 2 điểm, nên đặt 4–6 điểm ở các góc cách xa nhau.</p>
+    <button id="cam-open">Mở trình chỉnh camera</button><div id="cam-body"></div>`;
+  document.getElementById('cam-open').onclick = () => loadCameraList(id);
+}
+
+async function loadCameraList(id) {
+  const body = document.getElementById('cam-body');
+  body.innerHTML = '<p class="muted">Đang tải…</p>';
+  let r;
+  try { r = await api('GET', `/api/projects/${id}/cameras`); } catch (e) { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  if (!r.photos.length) { body.innerHTML = '<p class="muted">Không có ảnh nào được phép dùng làm texture.</p>'; return; }
+  const tag = p => p.passes ? '<span class="okc">đạt</span>' : (p.status === 'none' ? 'chưa có' : esc(p.status));
+  body.innerHTML = `<div class="row" id="cam-tabs">${r.photos.map(p => `<button data-k="${p.photo}">Ảnh ${p.photo} · ${tag(p)}${p.manual_points ? ` · ${p.manual_points} điểm tay` : ''}</button>`).join('')}</div>
+    <div id="cam-editor"></div>`;
+  body.querySelectorAll('#cam-tabs button').forEach(b => b.onclick = () => openCamera(id, +b.dataset.k));
+  openCamera(id, r.photos[0].photo);
+}
+
+async function openCamera(id, k) {
+  const el = document.getElementById('cam-editor');
+  el.innerHTML = '<p class="muted">Đang tải ảnh…</p>';
+  let v;
+  try { v = await api('GET', `/api/projects/${id}/cameras/${k}`); } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  camState[id] = { k, v, t: Date.now(), points: Object.fromEntries(Object.entries(v.manual || {}).map(([a, b]) => [a, [...b]])),
+                   active: Object.values(v.sketch_labels || {})[0] || Object.keys(v.labels)[0] };
+  drawCamera(id);
+}
+
+function camGateText(v) {
+  const m = v.metrics || {};
+  const ok = v.status && ['solved', 'manual'].includes(v.status) && !(v.gate || []).length;
+  const rows = [];
+  if (m.rms_px != null) rows.push(`sai số điểm ${m.rms_px} px`);
+  if (m.support != null) rows.push(`${Math.round(m.support * 100)}% góc mô hình khớp góc ảnh`);
+  if (m.silhouette) rows.push(`đường viền trời ${m.silhouette.score}`);
+  if ((m.off_points || []).length) rows.push(`điểm lệch: ${m.off_points.map(esc).join(', ')}`);
+  const head = ok ? '<span class="okc">Camera đạt</span>'
+    : v.status === 'failed' ? `<span class="err">Chưa giải được: ${esc(v.why || '')}</span>`
+    : (v.status === 'skipped' || !v.status) ? '<span class="muted">Chưa có camera</span>' : '<span class="err">Camera chưa đạt</span>';
+  return `<p>${head}${rows.length ? ' · ' + rows.join(' · ') : ''}</p>
+    ${(v.gate || []).length ? `<ul class="muted">${v.gate.map(g => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}`;
+}
+
+function drawCamera(id) {
+  const st = camState[id], v = st.v;
+  const [W, H] = v.size;
+  const r = Math.max(4, W / 260), fs = Math.max(12, W / 90);
+  const sketchIds = Object.values(v.sketch_labels || {});
+  const order = [...sketchIds, ...Object.keys(v.labels).filter(k => !sketchIds.includes(k))];
+  const num = Object.fromEntries(Object.entries(v.sketch_labels || {}).map(([n, kid]) => [kid, n]));
+  const el = document.getElementById('cam-editor');
+  const edges = (v.edges || []).map(e => `<line x1="${e[0]}" y1="${e[1]}" x2="${e[2]}" y2="${e[3]}" class="cam-edge" style="stroke-width:${r / 2}"/>`).join('');
+  const proj = Object.entries(v.corners || {}).filter(([kid]) => !st.points[kid]).map(([kid, p]) =>
+    `<circle cx="${p[0]}" cy="${p[1]}" r="${r}" class="cam-proj" data-kid="${esc(kid)}"><title>${esc(v.labels[kid] || kid)}</title></circle>`).join('');
+  const man = Object.entries(st.points).map(([kid, p]) =>
+    `<g><circle cx="${p[0]}" cy="${p[1]}" r="${r * 1.4}" class="cam-man${kid === st.active ? ' on' : ''}" data-kid="${esc(kid)}"><title>${esc(v.labels[kid] || kid)} (chuột phải: xoá)</title></circle>
+     <text x="${p[0] + r * 1.8}" y="${p[1] - r * 1.8}" font-size="${fs}" class="cam-txt">${esc(num[kid] || '')}</text></g>`).join('');
+  el.style.minHeight = `${el.offsetHeight}px`;               // redraws keep their height: the page does not jump
+  el.innerHTML = `<div class="row" style="align-items:flex-start;margin-top:10px">
+    <div class="grow" style="min-width:420px">
+      <p style="margin:4px 0"><b>Ảnh thật — bấm vào đây để đặt góc đang chọn</b> <span class="muted">(${esc(v.labels[st.active] || st.active)})</span></p>
+      <div class="cam-stage"><img src="/files/${id}/${esc(v.image)}" draggable="false">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" id="cam-svg">${edges}${proj}${man}</svg></div>
+      <p class="muted">Cyan: mô hình chiếu bằng camera hiện tại · hồng: điểm bạn đặt (vàng: góc đang chọn). Kéo điểm cyan hoặc hồng tới đúng góc; chuột phải để xoá điểm hồng.</p>
+    </div>
+    <div style="flex:0 0 360px">
+      <label>Góc đang đặt</label>
+      <select id="cam-active">${order.map(kid => `<option value="${esc(kid)}" ${kid === st.active ? 'selected' : ''}>${num[kid] ? num[kid] + ' — ' : ''}${esc(v.labels[kid] || kid)}${st.points[kid] ? ' ✓' : ''}</option>`).join('')}</select>
+      <p class="muted">Bấm lên ảnh để đặt góc này. Số trên hình mô hình bên dưới giúp nhận ra góc.</p>
+      <p class="muted" style="margin:6px 0 2px"><b>Hình mô hình</b> (chỉ để nhận ra góc số mấy — không bấm vào đây)</p>
+      <img src="/files/${id}/${esc(v.sketch)}?t=${st.t}" draggable="false" style="width:100%;border:1px solid var(--line);border-radius:6px;opacity:.95">
+      <p class="row"><button class="primary" id="cam-auto">AI tự đặt điểm</button>
+        <button id="cam-solve">Giải camera (${Object.keys(st.points).length} điểm)</button>
+        <button id="cam-clear">Xoá điểm</button></p>
+      <p class="muted">"AI tự đặt điểm": AI tìm các góc trên ảnh, phóng to từng góc để chỉnh cho đúng, rồi giải camera
+        (mất khoảng 1–2 phút). Sau đó bạn chỉ cần xem khung xanh có ôm sát công trình không; muốn thì kéo lại điểm.</p>
+      <div id="cam-msg">${camGateText(v)}</div>
+    </div></div>`;
+  const img = el.querySelector('.cam-stage img');
+  const done = () => { el.style.minHeight = ''; };
+  if (img.complete) done(); else img.onload = done;
+  bindCamera(id);
+}
+
+function bindCamera(id) {
+  const st = camState[id];
+  const svg = document.getElementById('cam-svg');
+  const toImg = ev => {
+    const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+    return [Math.round(q.x * 10) / 10, Math.round(q.y * 10) / 10];
+  };
+  const sel = document.getElementById('cam-active');
+  sel.onchange = () => { st.active = sel.value; drawCamera(id); };
+  let drag = null;
+  svg.onpointerdown = ev => {
+    if (ev.button === 2) return;
+    const kid = ev.target.dataset ? ev.target.dataset.kid : null;
+    if (kid) { drag = kid; st.active = kid; svg.setPointerCapture(ev.pointerId); ev.preventDefault(); return; }
+    st.points[st.active] = toImg(ev);                        // place the chosen corner here, then go to the next one
+    const opts = [...sel.options].map(o => o.value), i = opts.indexOf(st.active);
+    const next = opts.slice(i + 1).find(k => !st.points[k]);
+    if (next) st.active = next;
+    drawCamera(id);
+  };
+  svg.onpointermove = ev => {
+    if (!drag) return;
+    st.points[drag] = toImg(ev);
+    const c = svg.querySelector(`circle[data-kid="${CSS.escape(drag)}"]`);
+    if (c) { c.setAttribute('cx', st.points[drag][0]); c.setAttribute('cy', st.points[drag][1]); }
+  };
+  svg.onpointerup = () => { if (drag) { drag = null; drawCamera(id); } };
+  svg.oncontextmenu = ev => {
+    ev.preventDefault();
+    const kid = ev.target.dataset ? ev.target.dataset.kid : null;
+    if (kid && st.points[kid]) { delete st.points[kid]; drawCamera(id); }
+  };
+  document.getElementById('cam-clear').onclick = async () => { st.points = {}; await solveCamera(id); };
+  document.getElementById('cam-solve').onclick = () => solveCamera(id);
+  document.getElementById('cam-auto').onclick = () => autoCamera(id);
+}
+
+async function autoCamera(id) {
+  const st = camState[id];
+  const msg = document.getElementById('cam-msg');
+  document.querySelectorAll('#cam-editor button').forEach(b => b.disabled = true);
+  msg.innerHTML = '<p class="muted">AI đang tìm và chỉnh các góc… (1–2 phút)</p>';
+  try {
+    st.v = await api('POST', `/api/projects/${id}/cameras/${st.k}/auto`);
+    st.t = Date.now();
+    st.points = Object.fromEntries(Object.entries(st.v.manual || {}).map(([a, b]) => [a, [...b]]));
+    drawCamera(id);
+    const extra = (st.v.dropped || []).length ? `<p class="muted">Đã bỏ ${st.v.dropped.length} điểm AI đặt lệch.</p>` : '';
+    document.getElementById('cam-msg').insertAdjacentHTML('afterbegin', extra);
+    const tab = document.querySelector(`#cam-tabs button[data-k="${st.k}"]`);
+    const ok = !(st.v.gate || []).length && st.v.status === 'manual';
+    if (tab) tab.innerHTML = `Ảnh ${st.k} · ${ok ? '<span class="okc">đạt</span>' : esc(st.v.status || '')} · AI`;
+  } catch (e) {
+    msg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    document.querySelectorAll('#cam-editor button').forEach(b => b.disabled = false);
+  }
+}
+
+async function solveCamera(id) {
+  const st = camState[id];
+  const msg = document.getElementById('cam-msg');
+  msg.innerHTML = '<p class="muted">Đang giải camera…</p>';
+  try {
+    st.v = await api('PUT', `/api/projects/${id}/cameras/${st.k}`, { points: st.points });
+    st.t = Date.now();
+    st.points = Object.fromEntries(Object.entries(st.v.manual || {}).map(([a, b]) => [a, [...b]]));
+    drawCamera(id);
+    const tab = document.querySelector(`#cam-tabs button[data-k="${st.k}"]`);
+    const ok = !(st.v.gate || []).length && st.v.status === 'manual';
+    const n = Object.keys(st.points).length;
+    if (tab) tab.innerHTML = `Ảnh ${st.k} · ${ok ? '<span class="okc">đạt</span>' : esc(st.v.status || '')}${n ? ` · ${n} điểm tay` : ''}`;
+  } catch (e) { msg.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
 // ---------------------------------------------------------------- projects
 async function viewProjects() {
   const list = await api('GET', '/api/projects');
@@ -103,12 +273,14 @@ async function viewProject(id, fromPoll) {
   </div>
   <div class="card" id="satellite"></div>
   <div class="card" id="textures"></div>
+  <div class="card" id="cameras"></div>
   <div class="card"><h2>Nhật ký <span class="muted">(mới nhất ở trên)</span></h2><pre class="log" id="log">${esc(logText(d))}</pre></div>`;
   Promise.resolve(renderTextures(id, d)).catch(() => {}).finally(() => {
     $app.style.minHeight = '';
     if (keepY !== null) window.scrollTo(0, keepY);
   });
   renderSatellite(id, d);
+  renderCameras(id, d);
   if (!fromPoll) requestAnimationFrame(() => window.scrollTo(0, 0));
   else window.scrollTo(0, keepY);
   document.getElementById('run').onclick = async () => { await api('POST', `/api/projects/${id}/run`); viewProject(id); };

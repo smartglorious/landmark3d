@@ -36,6 +36,20 @@ def clear_scene():
                 coll.remove(d)
 
 
+def set_emission(bsdf, emissive, strength):
+    """Emissive colour and strength on the Principled BSDF (exported as glTF emissiveFactor). Blender 4 names the
+    input "Emission Color", Blender 3 "Emission"; inputs are looked up by name with both spellings."""
+    if not emissive or not any(emissive) or strength <= 0:
+        return False
+    col = next((bsdf.inputs[n] for n in ("Emission Color", "Emission") if n in bsdf.inputs), None)
+    if col is None:
+        return False
+    col.default_value = tuple(srgb_to_linear(c) for c in emissive) + (1.0,)
+    if "Emission Strength" in bsdf.inputs:
+        bsdf.inputs["Emission Strength"].default_value = float(strength)
+    return True
+
+
 def make_material(name, srgb, roughness, texture=None, world_size=3.0, tint="material", clamp=False, metallic=0.0):
     """tint: 'material' = multiply by the material colour, None = keep the photo colours, [r,g,b] = explicit tint."""
     m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
@@ -322,12 +336,74 @@ def render_views(out_dir, bounds, views, custom=None, resolution=(1280, 800), pa
 SIDE_DIR = {"north": (0.0, 1.0), "south": (0.0, -1.0), "east": (1.0, 0.0), "west": (-1.0, 0.0)}
 
 
+SKIN_DEPTH = 0.9            # faces this close to a facade plane (in front or behind: pilasters, recesses) take its skin
+SKIN_FACING = -0.5          # ... unless they face back into the building: side faces of pilasters, sills and
+                            # cornice tops take the image's colour at their own position
+
+
+def panel_material(job):
+    return make_material("L3D_panels", (255, 255, 255), 0.7, job["panel_atlas"], tint=None, clamp=True)
+
+
+def apply_skins(ob, poly, part, skins, mat):
+    """Texture the real wall mesh with its facade images ("skin" panels): every face of this part that lies on a
+    textured facade plane (wall, pilasters, mouldings, their sides and tops) gets the image, with UVs placed so the
+    image covers the facade edge to edge and from z0 to z1. Openings keep their own material, so the modelled
+    windows and their relief stay, under the windows drawn in the image."""
+    if not skins:
+        return 0
+    me = ob.data
+    if mat.name not in [m.name for m in me.materials if m]:
+        me.materials.append(mat)
+    mi = [m.name if m else None for m in me.materials].index(mat.name)
+    opening = {i for i, m in enumerate(me.materials) if m and m.name in ("L3D_opening",)}
+    layer = me.uv_layers.get("UVMap") or me.uv_layers.new(name="UVMap")
+    ring = geom.ensure_ccw(poly)
+    n = len(ring)
+    planes = []
+    for pn in skins:
+        i = int(pn["edge_index"]) % n
+        a, b2 = Vector((ring[i][0], ring[i][1], 0)), Vector((ring[(i + 1) % n][0], ring[(i + 1) % n][1], 0))
+        L = (b2 - a).length
+        if L < 0.5:
+            continue
+        d = (b2 - a) / L
+        out = Vector((d.y, -d.x, 0))
+        z0 = pn["z0"] if pn.get("z0") is not None else part["base_z"]
+        z1 = pn["z1"] if pn.get("z1") is not None else part["base_z"] + part["height"]
+        planes.append((a, d, out, L, z0, z1, pn["uv"]))
+    done = 0
+    for p in me.polygons:
+        if p.material_index in opening:
+            continue
+        c = p.center
+        for a, d, out, L, z0, z1, (u0, v0, u1, v1) in planes:
+            if p.normal.dot(out) < SKIN_FACING:
+                continue
+            rel = Vector((c.x, c.y, 0)) - a
+            if abs(rel.dot(out)) > SKIN_DEPTH:
+                continue
+            t = rel.dot(d)
+            if not (-0.05 <= t <= L + 0.05 and z0 - 0.05 <= c.z <= z1 + 0.05):
+                continue
+            p.material_index = mi
+            for li in p.loop_indices:
+                v = me.vertices[me.loops[li].vertex_index].co
+                tt = min(max((Vector((v.x, v.y, 0)) - a).dot(d) / L, 0.0), 1.0)
+                zz = min(max((v.z - z0) / max(z1 - z0, 1e-6), 0.0), 1.0)
+                layer.data[li].uv = (u0 + tt * (u1 - u0), v0 + zz * (v1 - v0))
+            done += 1
+            break
+    me.update()
+    return done
+
+
 def add_panels(job, meshes, warnings):
     """Photo panels: one quad per chosen wall face, 3 cm in front, UVs into the packed panel atlas."""
-    panels = job.get("panels") or []
+    panels = [pn for pn in job.get("panels") or [] if not pn.get("skin")]   # skins go on the real mesh instead
     if not panels or not job.get("panel_atlas"):
         return 0
-    mat = make_material("L3D_panels", (255, 255, 255), 0.7, job["panel_atlas"], tint=None, clamp=True)
+    mat = panel_material(job)
     by_id = {part["id"]: (part, poly) for part, poly, _ in meshes}
     verts, faces, uvs = [], [], []
     made = 0
@@ -417,6 +493,8 @@ def main():
         mats[name] = make_material(f"L3D_{name}", m["srgb"], m.get("roughness", 0.75),
                                    tex["file"] if tex else None, tex.get("world_size_m", 3.0) if tex else 3.0,
                                    tint=(tex.get("tint") if tex else "material"), metallic=m.get("metallic", 0.0))
+        set_emission(next(n for n in mats[name].node_tree.nodes if n.type == "BSDF_PRINCIPLED"),
+                     m.get("emissive"), float(m.get("emissive_strength", 1.0)))
     for name, tex in job.get("textures", {}).items():
         if name not in mats:                       # texture for a material the spec does not define yet
             mats[name] = make_material(f"L3D_{name}", (255, 255, 255), 0.75, tex["file"], tex.get("world_size_m", 3.0),
@@ -458,6 +536,8 @@ def main():
     feature_left = max(0, tri_budget - sum(g.triangles() for _, _, g in meshes))
     flag_on = bool((job.get("engine") or {}).get("detail_engine_v2"))
     part_objects = []
+    skinned_faces = 0
+    facade_cov = {}
     articulation_report = {"placed": [], "skipped": []}
     for part, poly, gm in meshes:
         feature_left -= geom.features(poly, part["base_z"], part["base_z"] + part["height"], part.get("taper"),
@@ -474,7 +554,9 @@ def main():
                 fallback = {"wall": "wall", "roof": "roof", "trim": "trim"}.get(k, "trim")
                 tag_mat[k] = fallback if fallback in mats else next(iter(mats))
                 warnings.append(f"part {part['id']}: material '{v}' unknown, used '{tag_mat[k]}'")
-        covered = [pn for pn in job.get("panels") or [] if pn.get("part") == part["id"] and pn.get("edge_index") is not None]
+        mine = [pn for pn in job.get("panels") or [] if pn.get("part") == part["id"] and pn.get("edge_index") is not None]
+        covered = [pn for pn in mine if not pn.get("skin")]     # skins keep the modelled detail under them
+        skins = [pn for pn in mine if pn.get("skin")]
         if covered:                                   # a real photo shows this face: drop the generated detail on it
             ring = geom.ensure_ccw(poly)
             z_lo, z_hi = part["base_z"], part["base_z"] + part["height"]
@@ -487,8 +569,15 @@ def main():
                 tag_mat[t] = t[2:] if t[2:] in mats else tag_mat["trim"]
                 if t[2:] not in mats:
                     warnings.append(f"part {part['id']}: feature material '{t[2:]}' unknown, used trim")
+        edges_total = len(geom.ensure_ccw(poly))
+        wall_textured = tag_mat["wall"] in job.get("textures", {})
+        facade_cov[part["id"]] = {"faces": edges_total,
+                                  "photo_faces": edges_total if wall_textured else len({int(pn["edge_index"]) % edges_total
+                                                                                        for pn in mine})}
         ob = link_mesh(f"L3D_{part['id']}", gm, tag_mat, mats)
         planar_uvs(ob)
+        if skins and job.get("panel_atlas"):
+            skinned_faces += apply_skins(ob, poly, part, skins, panel_material(job))
         ob["l3d_part"] = part["id"]
         part_objects.append((part["id"], ob))
 
@@ -542,6 +631,9 @@ def main():
     os.makedirs(os.path.dirname(out["blend"]), exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=out["blend"])
     used = sorted({m.name for ob in bpy.context.scene.objects if ob.type == "MESH" for m in ob.data.materials if m})
+    # one draw call per material slot of each mesh object (glTF primitives); the M6 draw-call estimate
+    draw_calls = sum(max(1, len([m for m in ob.data.materials if m])) for ob in bpy.context.scene.objects
+                     if ob.type == "MESH")
     if tris >= budgets["triangles_max"]:
         errors.append(f"triangles {tris} >= limit {budgets['triangles_max']}")
     if size >= budgets["bytes_max"]:
@@ -552,10 +644,10 @@ def main():
         warnings.append("Draco not available; exported without compression")
     result = {"ok": not errors, "errors": errors, "warnings": warnings, "triangles": tris, "bytes": size,
               "materials": len(used), "material_names": used, "openings": openings_total, "compression": comp,
-              "panels": panels_made, "textured_materials": sorted(job.get("textures", {}).keys()),
+              "panels": panels_made, "skinned_faces": skinned_faces, "textured_materials": sorted(job.get("textures", {}).keys()),
               "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
               "accounting": accounting, "engine": job.get("engine") or {}, "articulation": articulation_report,
-              "ao": ao_report, "normal": normal_report,
+              "ao": ao_report, "normal": normal_report, "draw_calls": draw_calls, "facade_coverage": facade_cov,
               "openings_lod": {pid: st["lod_counts"] for pid, st in opening_stats.items()},
               "openings_allocation": {pid: {k: st["allocation"][k] for k in ("added_triangles", "target_utilization",
                                                                           "low_utilization_reason")}

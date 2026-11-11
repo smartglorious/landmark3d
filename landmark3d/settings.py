@@ -51,6 +51,7 @@ DEFAULTS = {
     "judge": True,
     "judge_samples": 3,       # independent readings averaged into each score (one reading moves by a point or more)
     "auto_textures": True,    # facade photo panels + seamless material swatches from licence-allowed photos            # independent AI score of the final model (spec["quality"])
+    "generated_textures": True,   # facade textures drawn by Codex image generation (signed-in CLI), in the building's style, windows on the model's grid; labelled as generated
     # Satellite plan view for the AI: "esri" (Esri World Imagery, reference only, attribution) or "none".
     # Google imagery is never downloaded automatically (its terms forbid it); a screenshot can be uploaded instead.
     "satellite_provider": "esri",
