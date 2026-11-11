@@ -240,3 +240,23 @@ automatic textures (`autotex.run_v2`). No AI was used.
 
 T2 camera solve on Bưu điện photos 2–4 (6 AI calls in two runs): no camera passes the gate. Details in
 `docs/SMART_TEXTURE_PLAN.md`, section 8.
+
+## 2026-11-11 — restructured flow (P2–P11): texture phase, A2.5, generation first, build without AI
+
+Dev set, specs reused as approved (the spec phase, P5, was not rerun). `scripts_dev/flow_bench.py`, raw rows in
+`flow_bench_2026-11-11.json`. Times are for a rerun with the Codex images cached; the first texture run took
+20 min (Bưu điện, 8 parts), 45 min (UBND, 25 images), 61 min (Đức Bà, 29 images), 12 min (Bitexco, 6 images).
+
+| Project | Generated faces | Photo crops | Generated tiles | Failed parts | Build | GLB | Seam ΔE median | Bay phase median | M6 gate |
+|---|---|---|---|---|---|---|---|---|---|
+| Bưu điện | 43 | 0 | 3 | – | 14 s, ok | 3.17 MB | 0.97 | 0.004 | pass |
+| Đức Bà | 38 | 4 (fallback) | 2 | crossing_clerestory (window rhythm, twice) | 15 s, ok | 3.76 MB | 4.31 | 0.005 | plan_iou 0.949 |
+| UBND | 52 | 0 | 3 | – | 16 s, ok | 3.18 MB | 4.17 | 0.004 | plan_iou 0.809 |
+| Bitexco | 16 + glass module | 0 | 1 (curtain wall) | – | 9 s, ok | 0.34 MB | 0.64 | – | plan_iou 0.916 |
+
+- No face over the sky limit; no Claude call in the texture step except Đức Bà's crop fallback (cached answers).
+- Fixes found by this run: per-part atlases counted as one material and limited to 45 % of the byte limit; frame
+  lines drawn by the generator cut; faces cut inside a copy fade into the image edge (Đức Bà seam ΔE 10.6 → 4.3);
+  generated faces are not colour-corrected per face; blank walls pass the window check.
+- Not done: the held-out set (one frozen run) and a judge reading of these builds; both cost AI quota and wait for
+  the owner.

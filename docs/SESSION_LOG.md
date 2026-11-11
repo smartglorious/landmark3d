@@ -201,3 +201,21 @@ either:
   - magenta: AI points.
 - **T0 reports:** `projects/<id>/reports/texture_quality.json`.
 - **Judge A/B sheets:** `projects/<id>/reports/judge_flag_off|on/`.
+
+
+---
+
+## 2026-11-11 (evening) — flow restructuring P1–P12
+
+**State left behind**
+- Plan: `docs/FLOW_AUDIT_2026-11-11.md` (section 6 = what was done). All work committed locally, nothing pushed.
+- New flow: spec → A2 (with facade layouts) → `textures` phase (Codex elevations, feature faces, material and
+  curtain-wall tiles; photo crops only for bare faces) → **A2.5 Texture review** → build (no AI) → A3.
+- Settings added: `facade_gate` ("checks"), `opening_assemblies` (on), `photo_exact` (off). Texture cache key `-v23`.
+- The four dev projects (Bưu điện, Đức Bà, UBND, Bitexco) are rebuilt with the new flow and wait at A3.
+- Benchmark: `reports/benchmark/BENCHMARK.md`, 2026-11-11 entry.
+
+**Where to continue**
+- Owner review of the four A3 projects and of A2.5 in the web app.
+- Đức Bà `crossing_clerestory`: Codex twice missed the window rhythm; try "Vẽ lại" with a note at A2.5.
+- Not measured yet: the spec phase with the new facade gate (P5) and the held-out set (needs quota approval).
