@@ -222,9 +222,11 @@ def build_spec(prj: Project) -> dict:
                     return errs
                 if not obj["parts"]:
                     return ["parts must not be empty"]
+                from . import exposure
                 return (material_errors(obj, int(st["budgets"].get("materials_max", 10)))
                         + orientation_errors(obj["parts"], main)
-                        + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts))
+                        + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts)
+                        + exposure.feature_issues(obj["parts"], main))     # features on buried walls
 
             massing, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=massing_check,
                                        images=photos + sat_imgs, retries=2, accept_invalid=True, repair=repair_answer)
@@ -898,6 +900,12 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         prompt += ("\n\nREVIEW ROUND. The first attached images compare the photos (left) with the current model "
                    "(right) from the same viewpoints. An independent reviewer found these errors - fix the facade "
                    "ones; keep what already matches:\n- " + "\n- ".join(str(e) for e in feedback))
+    if main:
+        from . import exposure
+        prompt += ("\n\nEXPOSED WALLS (measured: the share of each wall not buried inside another part). Put every "
+                   "facing feature (rose windows, clocks, portals, pediments, loggias, entrances) on an exposed wall "
+                   "of its part; a feature on a wall that is more than half hidden is rejected:\n"
+                   + exposure.exposure_text(massing, main))
     prompt += ("\n\nFacade logic (checked automatically - inconsistent answers are rejected): every facade, or every "
                "segment of one, gets ONE bay "
                "grid (bay_spacing; the length is divided into whole bays, symmetric about its centre). Pilasters "
@@ -918,7 +926,9 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
 
     try:
         obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
-                             validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main) if main else []),
+                             validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main)
+                                                                     + _fixable_feature_issues(merged(o), main)
+                                                                     if main else []),
                              images=list(sheets or [])[:4] + photos[:4], retries=2)
     except Exception as exc:
         entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
@@ -932,6 +942,11 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         entry["layout_fixes"] = fixed[:12]
     prj.log("facade pass", {"features": n_feat})
     return out, entry
+
+
+def _fixable_feature_issues(massing: dict, main) -> list[str]:
+    from . import exposure
+    return exposure.feature_issues(massing["parts"], main, fixable_only=True)
 
 
 def score_pair(q) -> tuple:
@@ -1057,8 +1072,14 @@ def spec_blocking_issues(prj: Project) -> list[dict]:
 def review_issues(spec: dict) -> list[dict]:
     """Issues shown with the plan at A2 and A3 besides the structure check: unknown materials (blocking) and generated
     components (marked as generated, never observed)."""
-    from . import generative
-    return unknown_material_issues(spec) + generative.review_items(spec)
+    from . import generative, exposure
+    hidden = []
+    try:
+        hidden = [{"severity": "warning", "part": m.split(":")[0].replace("part ", ""), "code": "hidden_feature",
+                   "message": m} for m in exposure.feature_issues(spec, spec["footprint"]["local"])]
+    except (KeyError, TypeError, ValueError):
+        pass
+    return unknown_material_issues(spec) + generative.review_items(spec) + hidden
 
 
 def unknown_material_issues(spec: dict) -> list[dict]:

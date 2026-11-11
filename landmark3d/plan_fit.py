@@ -46,7 +46,16 @@ def _centre(part, main):
     return P.mean(axis=0)
 
 
+def _points(part, fn):
+    """Features placed by absolute plan position (finial, mast: x and y) move with their part."""
+    for ft in part.get("features") or []:
+        if isinstance(ft, dict) and ft.get("x") is not None and ft.get("y") is not None:
+            x, y = fn(float(ft["x"]), float(ft["y"]))
+            ft["x"], ft["y"] = round(x, 3), round(y, 3)
+
+
 def _move(part, dx, dy):
+    _points(part, lambda x, y: (x + dx, y + dy))
     fp = part["footprint"]
     k = _kind(fp)
     if k in ("rect", "rounded_rect", "stadium", "circle"):
@@ -62,6 +71,7 @@ def _turn_about(part, cx, cy, deg):
     a = math.radians(deg)
     ca, sa = math.cos(a), math.sin(a)
     rot = lambda x, y: (cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca)
+    _points(part, rot)
     if k in ("rect", "rounded_rect", "stadium", "circle"):
         x, y = rot(float(fp[k]["cx"]), float(fp[k]["cy"]))
         fp[k]["cx"], fp[k]["cy"] = round(x, 3), round(y, 3)
@@ -72,6 +82,7 @@ def _turn_about(part, cx, cy, deg):
 
 
 def _scale_about(part, cx, cy, s):
+    _points(part, lambda x, y: (cx + (x - cx) * s, cy + (y - cy) * s))
     fp = part["footprint"]
     k = _kind(fp)
     if k in ("rect", "rounded_rect", "stadium", "circle"):
@@ -91,6 +102,14 @@ def _stretch(part, sw, sd):
     fp = part["footprint"]
     k = _kind(fp)
     if k in ("rect", "rounded_rect", "stadium"):
+        cx, cy = float(fp[k]["cx"]), float(fp[k]["cy"])
+        a = math.radians(float(fp[k].get("rot_deg", 0.0)))
+        u, v = (math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a))
+
+        def st(x, y):
+            du, dv = (x - cx) * u[0] + (y - cy) * u[1], (x - cx) * v[0] + (y - cy) * v[1]
+            return cx + du * sw * u[0] + dv * sd * v[0], cy + du * sw * u[1] + dv * sd * v[1]
+        _points(part, st)
         fp[k]["w"] = round(float(fp[k]["w"]) * sw, 3)
         fp[k]["d"] = round(float(fp[k]["d"]) * sd, 3)
         if "r" in fp[k]:

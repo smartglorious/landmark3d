@@ -514,13 +514,29 @@ def check_unique(img: Image.Image, wall_srgb=None) -> list[str]:
     return probs
 
 
+EXPOSED_MIN = 0.5               # a feature face must be at least this share exposed (exposure.faces)
+SKIN_EXPOSED_MIN = 0.15         # faces buried deeper than this get no generated skin (nobody sees them)
+
+
+def exposed_share(spec: dict) -> dict:
+    """{(part id, edge index): exposed share} from exposure.faces (1.0 when it cannot be measured)."""
+    from .. import exposure
+    try:
+        return {(pid, r["edge_index"]): r["exposed"]
+                for pid, rows in exposure.faces(spec, spec["footprint"]["local"]).items() for r in rows}
+    except (KeyError, TypeError, ValueError):
+        return {}
+
+
 def feature_faces(spec: dict, parts: dict, done: set) -> list[tuple]:
-    """[(part id, face, features)] of the faces with features, most important first, at most MAX_FEATURE_FACES."""
+    """[(part id, face, features)] of the exposed faces with features, most important first, at most
+    MAX_FEATURE_FACES. A face buried inside other parts gets no image: nobody can see it."""
     from .. import autotex
     cands = []
+    ex = exposed_share(spec)
     for pid, part in parts.items():
         for f in autotex.part_faces(spec, part):
-            if (pid, f["edge_index"]) in done:
+            if (pid, f["edge_index"]) in done or ex.get((pid, f["edge_index"]), 1.0) < EXPOSED_MIN:
                 continue
             feats = face_features(part, f)
             bay = float(f["length_m"]) / max(1, int(f["n_bays"]))
@@ -636,8 +652,10 @@ def items_for(prj, spec: dict, parts: dict, refs_for, done: set, notes: list, ge
     items = []
     owner_notes = owner_notes or {}
     special = {(pid, f["edge_index"]): (f, feats) for pid, f, feats in feature_faces(spec, parts, done)}
+    ex = exposed_share(spec)
     for pid, part in parts.items():
-        faces = [f for f in autotex.part_faces(spec, part) if (pid, f["edge_index"]) not in done]
+        faces = [f for f in autotex.part_faces(spec, part) if (pid, f["edge_index"]) not in done
+                 and ex.get((pid, f["edge_index"]), 1.0) >= SKIN_EXPOSED_MIN]
         if not faces:
             continue
         res = generate_part(prj, spec, part, refs_for(pid), generate, owner_notes.get(pid, ""))
