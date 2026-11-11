@@ -231,3 +231,11 @@ def test_skin_atlases_shrink_to_their_share_of_the_byte_limit(prj):
     _, panels, _ = textures_mod.build_job(prj, 2048, bytes_max=2_000_000)
     used = sum(Path(p).stat().st_size for p in {pn["atlas"] for pn in panels})
     assert used <= textures_mod.SKIN_BYTES_SHARE * 2_000_000
+
+
+def test_tiles_repeat_without_a_seam():
+    a = np.zeros((40, 100, 3), np.uint8)
+    a[:, :, 0] = np.linspace(40, 220, 100)[None, :].astype(np.uint8)       # left dark, right bright: a hard seam
+    t = np.asarray(gf.tile(Image.fromarray(a), 1, 3, 40)).astype(float)
+    w = t.shape[1] // 3
+    assert abs(t[:, w - 1, 0].mean() - t[:, w, 0].mean()) < 12               # was about 180

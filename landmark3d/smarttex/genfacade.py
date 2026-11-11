@@ -240,10 +240,28 @@ def generate_part(prj, spec: dict, part: dict, refs: list, generate=None,
             "accepted": not problems}
 
 
+EDGE_BLEND = 0.04               # share of the width cross-faded at each side so the image repeats without a seam
+
+
+def x_periodic(img: Image.Image, share: float = EDGE_BLEND) -> Image.Image:
+    """Cross-fade the left and right edge bands so the right edge continues into the left one: copies side by side,
+    and neighbouring faces of a part (each ends where the next starts), meet without a colour step."""
+    a = np.asarray(img.convert("RGB")).astype(np.float32)
+    W = a.shape[1]
+    n = max(1, int(W * share))
+    out = a.copy()
+    for i in range(n):
+        w = 0.5 * (1.0 - i / n)
+        L, R = a[:, i], a[:, W - 1 - i]
+        out[:, i] = (1 - w) * L + w * R
+        out[:, W - 1 - i] = (1 - w) * R + w * L
+    return Image.fromarray(out.clip(0, 255).astype(np.uint8))
+
+
 def tile(img: Image.Image, n_src: int, n_face: int, h_px: int) -> Image.Image:
     """A face of n_face bays from an n_src-bay image: whole copies side by side, cut at a bay line."""
     bay_w = max(4, round(img.width * h_px / img.height / n_src))
-    src = img.resize((bay_w * n_src, h_px), Image.LANCZOS)
+    src = x_periodic(img.resize((bay_w * n_src, h_px), Image.LANCZOS))
     out = Image.new("RGB", (bay_w * n_face, h_px))
     x = 0
     while x < out.width:
