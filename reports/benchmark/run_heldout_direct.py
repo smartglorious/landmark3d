@@ -35,10 +35,18 @@ for d in projects_dir().iterdir():
 done = {}
 for lm in HELDOUT2:
     if lm["name"] in existing:
-        say("SKIP already exists (seen):", lm["name"])
-        continue
-    prj = Project.create(lm["name"], lm["location"], None, lm["lat"], lm["lon"])
-    say("project", prj.id)
+        # resume a run cut by the machine (Blender could not start, 0xC0000142): only failed phases run again
+        prj = Project(existing[lm["name"]])
+        if prj.state()["phases"]["build_review"]["status"] != "pending":
+            say("SKIP already finished:", prj.id)
+            continue
+        failed = [k for k, v in prj.state()["phases"].items() if v["status"] == "failed"]
+        for k in failed:
+            prj.set_phase(k, "pending", "resumed after an infrastructure failure")
+        say("resume", prj.id, "failed phases reset:", failed)
+    else:
+        prj = Project.create(lm["name"], lm["location"], None, lm["lat"], lm["lon"])
+        say("project", prj.id)
     t0 = time.time()
     while True:
         out = pipeline.run_until_blocked(prj)

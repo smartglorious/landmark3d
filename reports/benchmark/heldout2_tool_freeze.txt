@@ -36,3 +36,4 @@ settings (machine-local values, private keys left out):
   "texture_max_px": 2048
  }
 }
+runner commit ad28f74d1ee037fadb63424e665e27eb75fd32f1 (tool files unchanged since the freeze commit; only the benchmark runner was added)
