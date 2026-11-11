@@ -640,12 +640,15 @@ def main():
         errors.append(f"triangles {tris} >= limit {budgets['triangles_max']}")
     if size >= budgets["bytes_max"]:
         errors.append(f"GLB {size} bytes >= limit {budgets['bytes_max']}")
-    if len(used) > budgets.get("materials_max", 10):
-        errors.append(f"materials {len(used)} > limit {budgets['materials_max']}")
+    # The per-part facade atlases (P7) are one design material, the facade image, split only for resolution
+    n_design = len([m for m in used if not m.startswith("L3D_skin_")]) + (1 if any(m.startswith("L3D_skin_")
+                                                                                for m in used) else 0)
+    if n_design > budgets.get("materials_max", 10):
+        errors.append(f"materials {n_design} > limit {budgets['materials_max']}")
     if budgets.get("compression") == "draco" and comp != "draco":
         warnings.append("Draco not available; exported without compression")
     result = {"ok": not errors, "errors": errors, "warnings": warnings, "triangles": tris, "bytes": size,
-              "materials": len(used), "material_names": used, "openings": openings_total, "compression": comp,
+              "materials": n_design, "material_names": used, "openings": openings_total, "compression": comp,
               "panels": panels_made, "skinned_faces": skinned_faces, "textured_materials": sorted(job.get("textures", {}).keys()),
               "renders": renders, "render_engine": engine, "bounds": bounds, "seconds": round(time.time() - t0, 1),
               "accounting": accounting, "engine": job.get("engine") or {}, "articulation": articulation_report,
