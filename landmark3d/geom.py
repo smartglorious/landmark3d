@@ -1649,7 +1649,7 @@ def _column(mesh, at, x, y, z, height, d, tag) -> int:
     return used + _solid(mesh, at, x - 0.65 * d, x + 0.65 * d, y - 0.65 * d, y + 0.65 * d, z + height - cap, z + height, tag)
 
 
-def _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget, tag) -> int:
+def _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget, tag, roof=None) -> int:
     """Architectural details with real depth. z is the BOTTOM of the feature above the part's base."""
     z = base_z + float(ft.get("z", 0.0))
     if kind == "column":
@@ -1703,6 +1703,22 @@ def _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget, tag) -> int:
         h = max(0.2, float(ft.get("height", 1.0 if kind == "balustrade" else 0.8)))
         spacing = float(ft.get("spacing", 0.55 if kind == "balustrade" else 0.5))
         post = 0.07 if kind == "balustrade" else 0.03
+        rtype = (roof or {}).get("type", "flat")
+        if kind == "cresting" and rtype in ("gable", "gambrel", "hip", "mansard") and not is_tapered(taper):
+            # iron cresting runs along the RIDGE of a pitched roof, at the ridge height, not round the wall top
+            u, v, (umin, umax, vmin, vmax) = min_area_rect(poly)
+            if (roof or {}).get("ridge_axis") == "short":
+                u, v, (umin, umax, vmin, vmax) = v, u, (vmin, vmax, umin, umax)
+            vc = (vmin + vmax) / 2
+            half_w = (vmax - vmin) / 2
+            u0, u1 = (umin, umax) if rtype in ("gable", "gambrel") else (umin + half_w, umax - half_w)
+            if u1 - u0 < 1.0:
+                return 0
+            zr = top_z + float((roof or {}).get("height", 0) or 0)
+            a = (u[0] * u0 + v[0] * vc, u[1] * u0 + v[1] * vc)
+            t, o = u, (u[1], -u[0])
+            at = lambda x, y, zz: (a[0] + t[0] * x + o[0] * y, a[1] + t[1] * x + o[1] * y, zz)
+            return _railing(mesh, at, 0.0, u1 - u0, 0.0, zr, h, spacing, post, tag, budget)
         if kind == "cresting" or ft.get("around"):
             z = base_z + float(ft["z"]) if ft.get("z") is not None else top_z
             ring = ensure_ccw(ring_at(poly, base_z, top_z, taper, z))
@@ -1839,7 +1855,7 @@ def clear_covered_faces(mesh, covered) -> None:
 DEPTH_FEATURES = ("column", "balustrade", "balcony", "colonnade", "pediment", "finial", "cresting", "gables")
 
 
-def features(poly, base_z, top_z, taper, feats, mesh, budget_left: int = 10 ** 9) -> int:
+def features(poly, base_z, top_z, taper, feats, mesh, budget_left: int = 10 ** 9, roof=None) -> int:
     """Generic detail primitives on a part (all positions relative to the part):
       disc  {facing_deg, z, diameter, offset?, depth?, material}   clock faces, rose / round windows
       panel {facing_deg, z, width, height, offset?, depth?, material}   signs, friezes, flat reliefs
@@ -1859,7 +1875,7 @@ def features(poly, base_z, top_z, taper, feats, mesh, budget_left: int = 10 ** 9
         kind = ft.get("type")
         tag = "m:" + str(ft.get("material", "trim"))
         if kind in DEPTH_FEATURES:
-            used += _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget_left - used,
+            used += _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget_left - used, roof=roof, tag=
                                 "d:" + str(ft.get("material", "trim")))
         elif kind in ("disc", "panel"):
             z = base_z + float(ft.get("z", (top_z - base_z) / 2))

@@ -133,3 +133,17 @@ def test_facade_level_openings_false_keeps_the_listed_floors():
     assert geom.has_openings(fac) and not geom.has_openings({"opening_type": "arch", "openings": False})
     m = geom.Mesh()
     assert geom.facade_openings(WALL, 0.0, 10.0, fac, m, 10 ** 6) > 0
+
+
+def test_cresting_on_a_gable_roof_runs_along_the_ridge_not_round_the_walls():
+    hall = geom.rect_polygon(0, 0, 30, 10)
+    m = geom.Mesh()
+    geom.features(hall, 0.0, 12.0, None, [{"type": "cresting", "z": 18, "height": 1.0}], m,
+                  roof={"type": "gable", "height": 6})
+    ys = [v[1] for v in m.verts]
+    zs = [v[2] for v in m.verts]
+    assert max(abs(y) for y in ys) < 0.2                  # on the ridge line (y = 0), not on the walls (y = +-5)
+    assert min(zs) == pytest.approx(18.0) and max(zs) == pytest.approx(19.0)
+    flat = geom.Mesh()
+    geom.features(hall, 0.0, 12.0, None, [{"type": "cresting", "height": 1.0}], flat, roof={"type": "flat"})
+    assert max(abs(v[1]) for v in flat.verts) > 4.9       # a flat roof: round the wall top
