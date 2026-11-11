@@ -68,6 +68,9 @@ every volume you can see in any photo: every piece of the building with its own 
 wing, nave and lower aisles, side chapels, transept arms, clerestory, annexes and sacristies, porches, apse and apse
 chapels, towers, belfries, spires, domes, pavilions, gatehouses. A building seen from several sides usually has many
 volumes (a cathedral 15-30, a large public building 8-20); do not merge different roofs or wall planes into one box.
+Repeated roof structures are volumes too: a roof with several parallel ridges, saw-tooth roofs, raised monitors or
+clerestory strips, and rows of transverse gables - give each ridge, monitor or gable row its own narrow part with
+its own roof (e.g. a market hall with 12 parallel gabled roofs is 12 parts, not one hip roof).
 For each volume note its plan shape (sharp corners, rounded corners, fully rounded ends, circular, polygonal), its
 storeys, which street facade it is parallel to, and its facade floor by floor. Every volume gets its own part.
 Then return
