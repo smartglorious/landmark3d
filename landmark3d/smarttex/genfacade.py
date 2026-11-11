@@ -132,7 +132,7 @@ def wall_elements(part: dict, length: float, facing_deg: float = 270.0, entrance
     x_of = lambda p: p[0] * d[0] + p[1] * d[1]
     wins = [{"x": x_of(w["p"]), "z0": w["z0"], "w": w["w"], "h": w["h"], "kind": w["kind"],
              "shape": w.get("shape", "round")} for w in lay["windows"] if on_wall(w["o"])
-            and fac.get("openings", True) is not False]          # a blank wall, as the build does
+            and geom.has_openings(fac)]          # a blank wall, as the build does
     pl = fac.get("pilasters") if isinstance(fac.get("pilasters"), dict) else {}
     pils = [{"x": x_of(p["pt"][0]), "w": p["w"], "style": pl.get("style", "pilaster")} for p in lay["pilasters"]
             if on_wall(p["pt"][2])]

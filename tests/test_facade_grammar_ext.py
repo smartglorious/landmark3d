@@ -121,3 +121,15 @@ def test_every_feature_type_the_engine_draws_passes_the_schema():
         part = {"id": "p", "footprint": "main", "base_z": 0, "height": 10, "roof": {"type": "flat"},
                 "features": [{"type": kind, "facing_deg": 0, "z": 1}]}
         assert spec_mod.validate_massing({"parts": [part], "materials": {"wall": {"srgb": [1, 2, 3]}}}) == [], kind
+
+
+def test_facade_level_openings_false_keeps_the_listed_floors():
+    """Seen on Đức Bà (2026-11-11): the AI put "openings": false on the whole facade next to floor rules with
+    windows; the build drew no window at all. It means: only the listed floors have openings."""
+    fac = {"opening_type": "arch", "bay_spacing": 4, "level_height": 5, "openings": False,
+           "floors": [{"from": 1, "to": 1, "opening_type": "arch"}]}
+    _, south = lay(fac)
+    assert south and {w["lv"] for w in south} == {1}
+    assert geom.has_openings(fac) and not geom.has_openings({"opening_type": "arch", "openings": False})
+    m = geom.Mesh()
+    assert geom.facade_openings(WALL, 0.0, 10.0, fac, m, 10 ** 6) > 0

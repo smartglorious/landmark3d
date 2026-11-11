@@ -974,6 +974,18 @@ def _entrance_spot(edges, per, ent):
     return s0 + ln / 2
 
 
+def has_openings(facade) -> bool:
+    """False only for a blank facade: "openings": false and no floor rule with openings of its own (a facade with
+    "openings": false and listed floors has openings on those floors only)."""
+    if not facade:
+        return False
+    if facade.get("openings", True) is not False:
+        return True
+    rules = list(facade.get("floors") or []) + ([facade["ground"]] if isinstance(facade.get("ground"), dict) else [])
+    return any(isinstance(r, dict) and r.get("openings") is not False and r.get("opening_type") not in (None, "none")
+               for r in rules)
+
+
 def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, taper=None, window_builder=None):
     """Openings per floor (recessed-looking dark panels 5 cm in front of the wall).
 
@@ -984,7 +996,7 @@ def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, t
         return 0
     if facade.get("opening_type") == "curtain_wall":
         return curtain_wall(poly, base_z, top_z, facade, mesh, budget_left, taper)
-    if not facade.get("openings", True):
+    if not has_openings(facade):
         return 0
     if is_tapered(taper):                              # punched windows on a tapered wall: one ring per floor
         level_h = float(facade.get("level_height", 3.5))
@@ -1217,6 +1229,9 @@ def facade_layout(poly, base_z, top_z, facade):
         clear = b - pil_w - 2 * PILASTER_GAP
         for lv in range(lv_n):
             rule = next((r for r in rules if int(r.get("from", 0)) <= lv <= int(r.get("to", r.get("from", 0)))), None)
+            # "openings": false on the facade = only the floors listed in "floors" have openings
+            if rule is None and fac.get("openings", True) is False:
+                continue
             kind = (rule or {}).get("opening_type") or fac.get("opening_type", "rect")
             if kind == "none" or (rule or {}).get("openings") is False:
                 continue

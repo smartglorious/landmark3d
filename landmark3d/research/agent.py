@@ -100,7 +100,8 @@ Each part:
    diameter above each window, in the wall before the next floor),
    "floors": [{{"from": 0, "to": 0, "opening_type": "...", "bay_spacing": m, "opening_width": m,
                "opening_height": m, "pediment": true|false, "awning": true|false, "arch_shape", "lights",
-               "oculus", "openings": false (a blank floor: no windows)}}, ...]   (floor 0 = ground),
+               "oculus", "openings": false (a blank floor: no windows)}}, ...]   (floor 0 = ground; "openings":
+               false goes INSIDE a floor entry for a blank floor - never on the whole facade of a wall with windows),
    "entrance": {{"width": m, "height": m, "facing_deg": deg}}   (a large arched portal, e.g. a main entrance),
    "pilasters": {{"every": n_bays, "width": m, "depth": m, "style": "pilaster|buttress"}},   (flat columns, or
                 buttresses: deep stepped piers, between bays)

@@ -810,7 +810,7 @@ def facade_issues(massing: dict, main, notes: list | None = None) -> list[str]:
     out = []
     for p in massing.get("parts", []):
         fac = p.get("facade") or {}
-        if not fac or fac.get("opening_type") == "curtain_wall" or fac.get("openings") is False \
+        if not fac or fac.get("opening_type") == "curtain_wall" or not geom.has_openings(fac) \
                 or geom.is_tapered(p.get("taper")):
             continue
         try:
