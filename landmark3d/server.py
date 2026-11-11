@@ -153,6 +153,7 @@ def project(pid: str):
         "doctor": prj.read_json("reports/doctor.json"),
         "renders": renders,
         "has_glb": (prj.root / "output" / "model.glb").exists() and st["phases"]["build"]["status"] == "done",
+        "photo_exact": bool(settings_mod.load().get("photo_exact", False)),
         "events": prj.events(60),
     }
 

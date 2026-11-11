@@ -273,14 +273,14 @@ async function viewProject(id, fromPoll) {
   </div>
   <div class="card" id="satellite"></div>
   <div class="card" id="textures"></div>
-  <div class="card" id="cameras"></div>
+  ${d.photo_exact ? '<div class="card" id="cameras"></div>' : ''}
   <div class="card"><h2>Nhật ký <span class="muted">(mới nhất ở trên)</span></h2><pre class="log" id="log">${esc(logText(d))}</pre></div>`;
   Promise.resolve(renderTextures(id, d)).catch(() => {}).finally(() => {
     $app.style.minHeight = '';
     if (keepY !== null) window.scrollTo(0, keepY);
   });
   renderSatellite(id, d);
-  renderCameras(id, d);
+  if (d.photo_exact) renderCameras(id, d);
   if (!fromPoll) requestAnimationFrame(() => window.scrollTo(0, 0));
   else window.scrollTo(0, keepY);
   document.getElementById('run').onclick = async () => { await api('POST', `/api/projects/${id}/run`); viewProject(id); };

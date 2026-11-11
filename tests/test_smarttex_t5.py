@@ -74,7 +74,7 @@ def test_texture_step_uses_projection_for_faces_a_solved_camera_covers(tmp_path,
     monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
     from landmark3d import settings
     importlib.reload(settings)
-    settings.update({"projects_dir": str(tmp_path / "projects")})
+    settings.update({"projects_dir": str(tmp_path / "projects"), "photo_exact": True})
     from landmark3d.project import Project
     from landmark3d import autotex
     from landmark3d.smarttex import keypoints as kp, run as st_run

@@ -1047,7 +1047,9 @@ def run_v2(prj: Project, provider) -> dict:
     overrides = load_overrides(prj)
     colour = {pid for pid, o in overrides.items() if o.get("mode") == "colour"}
     notes: list = []
-    projected = bake.project_items(prj, spec, notes, provider)
+    from . import settings as settings_mod
+    # photo-exact mode (off by default): faces seen by solved photo cameras are textured by projection
+    projected = bake.project_items(prj, spec, notes, provider) if settings_mod.load().get("photo_exact", False) else []
     projected = [it for it in projected if it["face"]["part"] not in colour]
     done = {(it["face"]["part"], it["face"]["edge_index"]) for it in projected}
     generated = _generated_items(prj, spec, photos, done, notes, overrides)
