@@ -53,3 +53,29 @@ def test_exposure_text_lists_exposed_walls_with_compass_names():
     text = exposure.exposure_text(nave_and_transept(), MAIN)
     assert "transept: exposed" in text and "N" in text
     assert exposure.compass(90) == "N" and exposure.compass(0) == "E" and exposure.compass(225) == "SW"
+
+
+def test_facade_pass_shows_the_current_layouts_and_the_exposed_walls(tmp_path, monkeypatch):
+    """F4: the facade AI sees the build's own layout of each part (last image) and the exposed-walls list."""
+    import importlib
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.project import Project
+    from landmark3d.research import ai
+    prj = Project.create("Sheet Hall", "X", lat=1.0, lon=2.0)
+    parts = nave_and_transept()
+    for p in parts:
+        p.update(roof={"type": "gable", "height": 4},
+                 facade={"opening_type": "arch", "bay_spacing": 4, "level_height": 5, "arch_shape": "round"})
+    seen = {}
+
+    def fake_ask(provider, system, prompt, validator=None, images=None, **k):
+        seen["prompt"], seen["images"] = prompt, list(images or [])
+        return {"parts": []}, None
+    monkeypatch.setattr(ai, "ask_json", fake_ask)
+    pipeline.facade_pass(prj, None, {"parts": parts, "materials": {}}, [], lambda o: [], prj.state(), main=MAIN)
+    assert seen["images"] and str(seen["images"][-1]).endswith("facade_layouts.jpg")
+    assert "CURRENT facade layout" in seen["prompt"] and "EXPOSED WALLS" in seen["prompt"]

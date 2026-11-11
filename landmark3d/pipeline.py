@@ -926,12 +926,24 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         mats.update(o.get("materials") or {})
         return sanitize_facades(prune_materials(dict(massing, parts=parts, materials=mats)))
 
+    sheet = None
+    if main:
+        try:
+            sheet = layout_sheet(prj, massing)
+        except Exception as exc:                    # the sheet helps; its failure never stops the pass
+            prj.log("layout sheet failed", {"error": str(exc)[:200]})
+    if sheet is not None:
+        prompt += ("\n\nThe LAST attached image shows the CURRENT facade layout of each part exactly as the model "
+                   "builds it (grey wall, dark openings in their real outline, light bands = pilasters or "
+                   "buttresses, thin lines = floors), a few bays per part. Compare each with the photos: number of "
+                   "window rows, window shape (round / pointed / segmental arch, square), paired lights, round "
+                   "windows, blank bands, buttresses - and correct the facade keys where they differ.")
     try:
         obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
                              validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main)
                                                                      + _fixable_feature_issues(merged(o), main)
                                                                      if main else []),
-                             images=list(sheets or [])[:4] + photos[:4], retries=2)
+                             images=list(sheets or [])[:4] + photos[:4] + ([sheet] if sheet else []), retries=2)
     except Exception as exc:
         entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
         return massing, entry
@@ -944,6 +956,40 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         entry["layout_fixes"] = fixed[:12]
     prj.log("facade pass", {"features": n_feat})
     return out, entry
+
+
+LAYOUT_SHEET_PARTS = 12
+
+
+def layout_sheet(prj: Project, massing: dict):
+    """One labelled image with the facade layout (genfacade.layout: the build's own layout, 2 bays) of each part with
+    a punched facade, largest first. Returns its path, or None when no part has one."""
+    from PIL import Image, ImageDraw
+    from .smarttex import genfacade
+    from .autotex import _font
+    parts = [p for p in massing.get("parts", []) if p.get("enabled", True) is not False and p.get("facade")
+             and (p.get("facade") or {}).get("opening_type") != "curtain_wall" and float(p.get("height", 0)) >= 3]
+    parts.sort(key=lambda p: -float(p["height"]))
+    cells = []
+    for p in parts[:LAYOUT_SHEET_PARTS]:
+        img, _ = genfacade.layout(p, 2)
+        img.thumbnail((360, 300))
+        cells.append((p["id"], img))
+    if not cells:
+        return None
+    cols = 4
+    rows = (len(cells) + cols - 1) // cols
+    W, H = 380, 340
+    sheet = Image.new("RGB", (cols * W, rows * H), "white")
+    d = ImageDraw.Draw(sheet)
+    font = _font(16)
+    for k, (pid, img) in enumerate(cells):
+        x, y = (k % cols) * W, (k // cols) * H
+        d.text((x + 8, y + 6), pid, fill=(0, 0, 0), font=font)
+        sheet.paste(img, (x + 10, y + 30))
+    out = prj.path("reports", "facade_layouts.jpg")
+    sheet.save(out, "JPEG", quality=88)
+    return out
 
 
 def _fixable_feature_issues(massing: dict, main) -> list[str]:
