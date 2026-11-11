@@ -1,5 +1,7 @@
 # M2–M5 run report (Detail Engine v2)
 
+> Superseded by [`M0_M8_STATUS.md`](M0_M8_STATUS.md) (2026-11-10). Kept for history.
+
 Scope: `docs/DETAIL_ENGINE_V2_PLAN.md` section 10 (M2–M5) and the exit gates in `docs/PRODUCTION_BASELINE.md`.
 Status: **partial**. The offline parts of M2–M5 are implemented and tested. Several exit gates are not met, and each
 one is listed below with its reason. The flag `detail_engine_v2` stays **off** by default. Nothing was pushed or released.

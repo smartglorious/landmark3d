@@ -12,6 +12,7 @@ import math
 ARCH_MAX_METALLIC = 0.1
 GLASS_HINTS = ("glass", "curtain", "mirror")
 TEXEL_RATIO_MAX = 2.0
+EMISSIVE_STRENGTH_MAX = 10.0
 ATTRIBUTION_LICENCES = ("cc_by", "cc_by_sa", "permission_granted")
 TEXTURE_USES = ("reference_and_texture", "texture_permitted")
 
@@ -34,7 +35,23 @@ def validate_material(name: str, m: dict) -> list[str]:
     elif not is_glass(name) and met > ARCH_MAX_METALLIC:
         errs.append(f"{name}: architectural surfaces are not metallic (metallic {met} > {ARCH_MAX_METALLIC}); "
                     f"only glass or metal trim may be")
+    em = m.get("emissive")
+    if em is not None and (not isinstance(em, (list, tuple)) or len(em) != 3
+                           or not all(isinstance(c, (int, float)) and 0 <= c <= 255 for c in em)):
+        errs.append(f"{name}: emissive must be three values in 0-255")
+    st = m.get("emissive_strength", 1.0)
+    if not isinstance(st, (int, float)) or not 0.0 <= st <= EMISSIVE_STRENGTH_MAX:
+        errs.append(f"{name}: emissive_strength must be in [0, {EMISSIVE_STRENGTH_MAX:g}]")
     return errs
+
+
+def pbr_slots(m: dict, texture: bool = False, normal: bool = False, ao: bool = False) -> dict:
+    """The glTF material slots a spec material fills (plan M5 task 1): base colour always, metallic-roughness always
+    (as factors), normal and occlusion when baked, emissive when the material glows (signs, lit clocks)."""
+    em = m.get("emissive")
+    return {"baseColor": "texture" if texture else "factor", "metallicRoughness": "factor",
+            "normal": "texture" if normal else None, "occlusion": "texture" if ao else None,
+            "emissive": "factor" if em and any(em) and m.get("emissive_strength", 1.0) > 0 else None}
 
 
 def validate_materials(materials: dict) -> list[str]:

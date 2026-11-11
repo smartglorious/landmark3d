@@ -61,7 +61,7 @@ def test_detail_candidate_needs_a_real_upgrade():
 # ============================================================================ registry (task 2)
 def test_the_shipped_library_is_valid_and_versioned():
     assert registry.validate_registry() == []
-    assert registry.LIBRARY_VERSION == "1.0.0"
+    assert registry.LIBRARY_VERSION == "1.1.0"
     ids = [c["id"] for c in registry.load_library()["components"]]
     assert len(ids) == len(set(ids)) and "opening_assembly_rect" in ids
 

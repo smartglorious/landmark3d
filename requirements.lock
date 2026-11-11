@@ -23,6 +23,7 @@ jsonschema-specifications==2025.9.1
 numpy==2.5.4; python_version >= "3.12"
 numpy==2.4.6; python_version < "3.12"   # numpy 2.5 needs Python 3.12+
 openai==3.46.0
+opencv-python-headless==5.0.0.93   # Apache-2.0; Smart Texture (lines, camera solve, masks)
 opentelemetry-api==1.45.2
 packaging==26.3
 pillow==13.0.0

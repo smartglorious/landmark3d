@@ -483,6 +483,17 @@ def align_from_walls(points: list, cams: list, footprint_xy: list, known_height:
     direction from the fitted vertical planes, and the centre from the two opposite walls of each direction. Those
     walls also give the size, which is compared with the footprint: a mismatch above max_residual is refused."""
     pts, s, M = upright_frame(points, cams, known_height)
+    # Opposite walls need cameras all round. When the solved cameras sit on one side although the photos were taken
+    # all round, the reconstruction has folded: facades that look alike were registered as one facade. Say so, rather
+    # than the plane fit failing later with no reason.
+    from . import capture
+    poses = capture.assess_poses(cams)
+    cov = poses.get("checks", {}).get("coverage")
+    if cov and not cov["ok"]:
+        raise ValueError(f"the solved cameras cover only {cov['value']:.0%} of the directions around the building "
+                         f"(largest gap {cov['largest_gap_deg']:.0f} degrees): walls on the far side cannot be found. "
+                         f"If the photos were taken all round, the reconstruction folded facades that look alike onto "
+                         f"each other; add photos with distinctive features (corners, entrances) between the facades")
     thr = threshold if threshold is not None else 0.02 * known_height
     planes = fit_planes(pts, threshold=thr, max_planes=10, seed=0, min_share=0.02)
     vert = [p for p in planes if p["kind"] == "vertical"]

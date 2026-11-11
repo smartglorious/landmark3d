@@ -413,3 +413,112 @@ def _register_remaining():
 
 
 _register_remaining()
+
+
+# ----------------------------------------------------------------------------- M4: the slices still missing
+def string_course(params):
+    """A string course: a thin band projecting around the whole outline at height z above the part base."""
+    poly = params["poly"]
+    z = float(params.get("base_z", 0.0)) + float(params.get("z", 4.0))
+    height = float(params.get("height", 0.25))
+    projection = float(params.get("projection", 0.08))
+    if not 0.05 <= height <= 0.8:
+        raise ValueError("string course height must be between 0.05 and 0.8 m")
+    if not 0.02 <= projection <= 0.4:
+        raise ValueError("string course projection must be between 0.02 and 0.4 m")
+    m = geom.Mesh()
+    geom.band(poly, z, z + height, projection, m, "trim", caps=True)
+    return _component(m, {"z": z})
+
+
+def roof_gutter(params):
+    """Roof trim at the eave: a fascia board around the outline and a gutter channel in front of it (an open U:
+    bottom, front lip and back face)."""
+    poly = geom.ensure_ccw(params["poly"])
+    z = float(params.get("base_z", 0.0)) + float(params.get("z", 10.0))
+    fascia = float(params.get("fascia_height", 0.25))
+    width = float(params.get("gutter_width", 0.15))
+    if not 0.05 <= fascia <= 0.6:
+        raise ValueError("fascia height must be between 0.05 and 0.6 m")
+    if not 0.05 <= width <= 0.4:
+        raise ValueError("gutter width must be between 0.05 and 0.4 m")
+    m = geom.Mesh()
+    geom.band(poly, z - fascia, z, 0.03, m, "trim", caps=True)              # fascia board
+    inner = geom.outward_offset(poly, 0.03)
+    outer = geom.outward_offset(poly, 0.03 + width)
+    zb, zt = z - fascia * 0.8, z - fascia * 0.1
+    n = len(poly)
+    for i in range(n):
+        ia, ib, oa, ob = inner[i], inner[(i + 1) % n], outer[i], outer[(i + 1) % n]
+        m.f((m.v(*ia, zb), m.v(*ib, zb), m.v(*ob, zb), m.v(*oa, zb)), "trim")    # bottom
+        m.f((m.v(*oa, zb), m.v(*ob, zb), m.v(*ob, zt), m.v(*oa, zt)), "trim")    # front lip
+    return _component(m, {"eave_z": z})
+
+
+def bundled_tubes(params):
+    """A bundled-tube tower crown: square tubes on a grid, each stopping at its own height (setback silhouette).
+    `heights` lists the tube heights row by row; 0 leaves a cell empty."""
+    x, y = float(params.get("x", 0.0)), float(params.get("y", 0.0))
+    z0 = float(params.get("base_z", 0.0)) + float(params.get("z", 0.0))
+    cell = float(params.get("cell", 6.0))
+    heights = params.get("heights") or [[30, 40, 30], [40, 50, 40], [30, 40, 30]]
+    if not 1.0 <= cell <= 40.0:
+        raise ValueError("tube size must be between 1 and 40 m")
+    rows, cols = len(heights), max(len(r) for r in heights)
+    if rows * cols > 36:
+        raise ValueError("at most 36 tubes")
+    m = geom.Mesh()
+    placed = 0
+    for r, row in enumerate(heights):
+        for c, h in enumerate(row):
+            h = float(h)
+            if h <= 0:
+                continue
+            cx = x + (c - (cols - 1) / 2) * cell
+            cy = y + ((rows - 1) / 2 - r) * cell
+            geom._solid(m, lambda u, v, zz, cx=cx, cy=cy: (cx + u, cy + v, zz), -cell / 2, cell / 2, -cell / 2,
+                        cell / 2, z0, z0 + h, "wall", bottom=False)
+            placed += 1
+    if not placed:
+        raise ValueError("no tube has a height")
+    comp = _component(m, {"top": (x, y, z0 + max(float(h) for row in heights for h in row))})
+    comp.material_slots = {"wall"}
+    return comp
+
+
+def sign_panel(params):
+    """A sign or frieze panel on one face: a flat panel standing `depth` off the wall with a frame around it.
+    `kind` "frieze" spans the face less `margin` at each end; "sign" uses `width`."""
+    origin, t, o, ln = _face_frame(params["poly"], float(params.get("facing_deg", 270)), float(params.get("offset", 0.0)))
+    z = float(params.get("base_z", 0.0)) + float(params.get("z", 4.0))
+    kind = params.get("kind", "sign")
+    height = float(params.get("height", 1.2))
+    depth = float(params.get("depth", 0.12))
+    frame = float(params.get("frame", 0.08))
+    width = ln - 2 * float(params.get("margin", 0.5)) if kind == "frieze" else float(params.get("width", 4.0))
+    if kind not in ("sign", "frieze"):
+        raise ValueError("kind must be sign or frieze")
+    if width <= 0.3 or width > ln:
+        raise ValueError(f"panel width {width:.2f} m does not fit the {ln:.2f} m face")
+    if not 0.2 <= height <= 6.0 or not 0.02 <= depth <= 0.6:
+        raise ValueError("panel height must be 0.2-6 m and depth 0.02-0.6 m")
+    at = _frame_at(origin, t, o)
+    m = geom.Mesh()
+    geom._solid(m, at, -width / 2, width / 2, 0.0, depth, z, z + height, "accent")
+    fd = depth + 0.03
+    geom._solid(m, at, -width / 2 - frame, width / 2 + frame, 0.0, fd, z - frame, z, "trim", bottom=True)
+    geom._solid(m, at, -width / 2 - frame, width / 2 + frame, 0.0, fd, z + height, z + height + frame, "trim")
+    geom._solid(m, at, -width / 2 - frame, -width / 2, 0.0, fd, z, z + height, "trim", bottom=False)
+    geom._solid(m, at, width / 2, width / 2 + frame, 0.0, fd, z, z + height, "trim", bottom=False)
+    comp = _component(m, {"center": (origin[0], origin[1], z + height / 2)})
+    comp.material_slots = {"trim", "accent"}
+    return comp
+
+
+def _register_last():
+    from . import registry
+    registry.GENERATORS.update({"string_course": string_course, "roof_gutter": roof_gutter,
+                                "bundled_tubes": bundled_tubes, "sign_panel": sign_panel})
+
+
+_register_last()

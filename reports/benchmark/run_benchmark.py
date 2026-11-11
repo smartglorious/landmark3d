@@ -11,6 +11,8 @@ LANDMARKS = [
     {"name": "Bưu điện Trung tâm Sài Gòn", "location": "2 Công xã Paris, TP. Hồ Chí Minh, Việt Nam", "lat": 10.77995, "lon": 106.69990},
     {"name": "Nhà thờ Đức Bà Sài Gòn", "location": "01 Công xã Paris, TP. Hồ Chí Minh, Việt Nam", "lat": 10.77980, "lon": 106.69900},
     {"name": "Bitexco Financial Tower", "location": "2 Hải Triều, TP. Hồ Chí Minh, Việt Nam", "lat": 10.77160, "lon": 106.70440},
+    {"name": "Ủy Ban Nhân Dân Thành Phố Hồ Chí Minh", "location": "86 Lê Thánh Tôn, Quận 1, TP. Hồ Chí Minh, Việt Nam",
+     "lat": 10.7766558, "lon": 106.7008526},
 ]
 # Held-out set: never used while developing the tool. Run ONCE with --heldout; no manual inputs, no tool changes.
 HELDOUT = [
@@ -34,7 +36,8 @@ def say(*a):
 
 
 RESET = {"Dinh Độc Lập": "research", "Nhà hát Thành phố Hồ Chí Minh": "research", "Landmark 81": "research",
-         "Chợ Bình Tây": "research", "Bưu điện Trung tâm Sài Gòn": "spec", "Nhà thờ Đức Bà Sài Gòn": "spec", "Bitexco Financial Tower": "spec"}
+         "Chợ Bình Tây": "research", "Bưu điện Trung tâm Sài Gòn": "spec", "Nhà thờ Đức Bà Sài Gòn": "spec", "Bitexco Financial Tower": "spec",
+         "Ủy Ban Nhân Dân Thành Phố Hồ Chí Minh": "research"}
 LIMIT_WORDS = ("hit your", "usage limit", "rate limit")
 existing = {p["name"]: p["id"] for p in c.get("/api/projects").json()}
 done = {}

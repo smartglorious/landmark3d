@@ -348,6 +348,38 @@ class Mesh:
 
 
 # ----------------------------------------------------------------------------- roofs
+# Two-slope roofs (M4 slice 4). Gambrel: the steep lower slope covers this share of the half width and rises this
+# share of the roof height. Mansard: the steep lower slope sets in by this share of the inradius (capped in metres) and
+# rises this share of the height; a shallow hip crowns the inset ring.
+GAMBREL_KNEE = (0.4, 0.65)
+MANSARD_INSET = (0.25, 2.5)
+MANSARD_RISE = 0.7
+
+
+def build_mansard(poly, eave_z, height, mesh: "Mesh") -> None:
+    """A mansard: four (or more) steep lower faces set in from the eave, then a shallow hip on the inset ring. Plans
+    too small or too concave for the inset fall back to a plain hip."""
+    r_in = inradius_estimate(poly)
+    height = float(height if height is not None else max(2.0, r_in * 0.6))
+    d = min(MANSARD_INSET[0] * r_in, MANSARD_INSET[1])
+    inner, per_edge = inward_offset(poly, d) if d > 0.05 else (None, None)
+    if inner is None or not offset_is_valid(poly, inner, per_edge):
+        build_hip(poly, eave_z, height, mesh)
+        return
+    zk = eave_z + height * MANSARD_RISE
+    for j in range(len(poly)):
+        oa, ob = poly[j], poly[(j + 1) % len(poly)]
+        ia, ib = per_edge[j]
+        if math.dist(oa, ob) < 1e-6:
+            continue
+        if math.dist(ia, ib) < 1e-6:
+            mesh.f((mesh.v(oa[0], oa[1], eave_z), mesh.v(ob[0], ob[1], eave_z), mesh.v(ia[0], ia[1], zk)), "roof")
+        else:
+            mesh.f((mesh.v(oa[0], oa[1], eave_z), mesh.v(ob[0], ob[1], eave_z), mesh.v(ib[0], ib[1], zk),
+                    mesh.v(ia[0], ia[1], zk)), "roof")
+    build_hip(inner, zk, height * (1 - MANSARD_RISE), mesh)
+
+
 def roof_height_fn(poly, roof):
     """z(x, y) on the roof plane for boundary-following roofs (gable, shed); None for others."""
     t = roof.get("type", "flat")
@@ -363,6 +395,13 @@ def roof_height_fn(poly, roof):
     half = max(1e-6, (vmax - vmin) / 2)
     if t == "gable":
         return lambda x, y: eave + rise * max(0.0, 1.0 - abs((x * v[0] + y * v[1]) - vc) / half), (v, vc)
+    if t == "gambrel":
+        k, kh = GAMBREL_KNEE
+
+        def z(x, y):
+            s = max(0.0, 1.0 - abs((x * v[0] + y * v[1]) - vc) / half)      # 0 at the eave, 1 at the ridge
+            return eave + rise * (s / k * kh if s < k else kh + (s - k) / (1 - k) * (1 - kh))
+        return z, (v, vc, half)
     if t == "shed":
         return lambda x, y: eave + rise * ((x * v[0] + y * v[1]) - vmin) / (2 * half), None
     return None, None
@@ -544,6 +583,13 @@ def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
     ring = poly
     if rtype == "gable" and ridge is not None:
         ring = insert_ridge_points(poly, ridge[0], ridge[1])
+    knees = []
+    if rtype == "gambrel" and ridge is not None:
+        v, vc, half = ridge
+        off = half * (1 - GAMBREL_KNEE[0])
+        knees = [vc - off, vc, vc + off]
+        for c in knees:                              # the wall tops break at both knees and at the ridge
+            ring = insert_ridge_points(ring, v, c)
     n = len(ring)
     # walls (top follows the roof plane for gable/shed)
     for i in range(n):
@@ -552,6 +598,19 @@ def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
         zb = zfn(*b) if zfn else eave_z
         mesh.f((mesh.v(a[0], a[1], base_z), mesh.v(b[0], b[1], base_z), mesh.v(b[0], b[1], zb),
                 mesh.v(a[0], a[1], za)), "wall")
+    if rtype == "gambrel" and zfn:
+        v = ridge[0]
+        cuts = [-1e18] + knees + [1e18]
+        for lo, hi in zip(cuts[:-1], cuts[1:]):      # four strips: steep, shallow, shallow, steep
+            strip = clip_halfplane(ring, -v[0], -v[1], -lo) if lo > -1e17 else ring     # keep v.p >= lo
+            if hi < 1e17 and len(strip) >= 3:
+                strip = clip_halfplane(strip, v[0], v[1], hi)                            # keep v.p <= hi
+            if len(strip) >= 3:
+                mesh.f([mesh.v(x, y, zfn(x, y)) for x, y in strip], "roof")
+        return
+    if rtype == "mansard":
+        build_mansard(poly, eave_z, roof.get("height"), mesh)
+        return
     if rtype in ("gable", "shed") and zfn:
         if rtype == "gable":
             v, vc = ridge

@@ -193,3 +193,50 @@ v2 is consistent per part and free of trees on the bay-tiled faces. Still open:
 - Colour is balanced for brightness only.
 - Chợ Bình Tây's bays are mostly rejected by QA.
 - No judge scores were run for the v2 texture builds (visual check only).
+
+---
+
+# Detail Engine v2 flag on, 2026-11-10
+
+Run: UBND rerun from research, then the dev set (Bưu điện, Đức Bà, Bitexco), all with `detail_engine_v2` on and
+Opus. 18:05–20:08, no quota stop. All four builds succeed and wait at A3. Details and open problems:
+`docs/M0_M8_STATUS.md`.
+
+| Project | Judge before → now | Triangles before → now | Plan IoU of the spec before → now | M6 gate |
+|---|---|---|---|---|
+| UBND | 6.0 → 5.33 | 13,091 → 29,693 | 0.94 → 0.44 | fails plan IoU |
+| Bưu điện | 6 → 4.33 | 3,675 → 15,177 | 1.00 → 0.79 | fails plan IoU |
+| Đức Bà | not scored → 5.67 | 1,526 → 17,916 | 0.94 → 0.70 | fails plan IoU |
+| Bitexco | not scored → 5.67 | 8,502 → 11,766 | 0.79 → 0.76 | fails plan IoU |
+
+The drop comes from the newly generated AI specs, not from the flag. To isolate the flag, each new spec was judged
+twice, flag off then flag on:
+
+| Project | Off | On |
+|---|---|---|
+| UBND | 5.33 | 5.33 |
+| Bưu điện | 4.33 | 4.67 |
+| Đức Bà | 5.33 | 5.33 |
+| Bitexco | 6.67 | 5.00 |
+
+Bitexco's two render sets are pixel-identical. The 1.67 difference is the judge's own noise, which is larger than
+any flag effect. Conclusion: the flag does not hurt, and the judge cannot show that it helps. No articulation
+component was placed, because no AI spec requested one.
+
+Cost: 4 full pipeline runs plus 8 judge rounds (3 readings each).
+
+---
+
+# Smart Texture T0 baseline, 2026-11-10
+
+These are deterministic texture metrics (`python -m landmark3d texture-metrics <project>`) for the current
+automatic textures (`autotex.run_v2`). No AI was used.
+
+| Project | Faces | Sky > 2 % | Bay phase median | Off grid > 0.10 bay | Seam ΔE00 median | Seams > 6 |
+|---|---|---|---|---|---|---|
+| Bưu điện | 16 | 7 | 0.34 | 11 / 15 | 13.97 | 12 / 16 |
+| Đức Bà | 39 | 3 | 0.20 | 8 / 8 | 4.50 | 12 / 28 |
+| UBND | 28 | 1 | 0.175 | 24 / 27 | 15.56 | 21 / 26 |
+
+T2 camera solve on Bưu điện photos 2–4 (6 AI calls in two runs): no camera passes the gate. Details in
+`docs/SMART_TEXTURE_PLAN.md`, section 8.

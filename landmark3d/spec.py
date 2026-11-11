@@ -12,9 +12,9 @@ import jsonschema
 
 from . import geom
 
-ROOF_TYPES = ["flat", "gable", "hip", "pyramid", "dome", "shed", "none"]
+ROOF_TYPES = ["flat", "gable", "hip", "pyramid", "dome", "shed", "mansard", "gambrel", "none"]
 OSM_ROOF = {"flat": "flat", "gabled": "gable", "hipped": "hip", "pyramidal": "pyramid", "dome": "dome",
-            "onion": "dome", "skillion": "shed", "half-hipped": "hip", "mansard": "hip", "gambrel": "gable",
+            "onion": "dome", "skillion": "shed", "half-hipped": "hip", "mansard": "mansard", "gambrel": "gambrel",
             "round": "dome", "saltbox": "gable", "cone": "pyramid"}
 
 OPENING_TYPES = ["rect", "arch", "square", "storefront", "none"]
@@ -148,7 +148,10 @@ MASSING_SCHEMA = {
         "materials": {"type": "object", "additionalProperties": {
             "type": "object", "required": ["srgb"], "properties": {
                 "srgb": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}, "minItems": 3, "maxItems": 3},
-                "roughness": {"type": "number"}, "metallic": {"type": "number", "minimum": 0, "maximum": 1}}}},
+                "roughness": {"type": "number"}, "metallic": {"type": "number", "minimum": 0, "maximum": 1},
+                "emissive": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                             "minItems": 3, "maxItems": 3},
+                "emissive_strength": {"type": "number", "minimum": 0, "maximum": 10}}}},
         "notes": {"type": "array", "items": {"type": "string"}},
     },
 }

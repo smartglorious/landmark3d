@@ -34,7 +34,7 @@ Find the facts needed to build a simple but recognisable 3D massing model. Retur
     "total_height_m": {{"value": number, "unit": "m", "confidence": "high|medium|low", "source": "url"}},
     "main_wall_height_m": {{...}},
     "length_m": {{...}}, "width_m": {{...}}, "levels": {{...}},
-    "roof_form": {{"value": "flat|gable|hip|pyramid|dome|shed|tiered|mixed: describe (tiers, eaves, upturned corners)", ...}},
+    "roof_form": {{"value": "flat|gable|hip|pyramid|dome|shed|mansard|gambrel|tiered|mixed: describe (tiers, eaves, upturned corners)", ...}},
     "roof_colour": {{"value": "#rrggbb or name", ...}},
     "wall_colour": {{"value": "#rrggbb or name", ...}},
     "facade_bay_spacing_m": {{...}}, "opening_type": {{"value": "rect|arch", ...}},
@@ -51,7 +51,7 @@ MASSING_SYSTEM = (
     "model whose silhouette matches the photos: every distinct volume you can see (podium, mid-rise block, tower, "
     "crown) is its own part, with the plan shape and facade type it really has. "
     "Coordinates are metres in a local frame: x east, y north, origin at the footprint centroid. "
-    "Roof types: flat, gable, hip, pyramid, dome, shed, none; any of them may have projecting eaves (overhang), "
+    "Roof types: flat, gable, hip, pyramid, dome, shed, mansard (steep lower slope on every side, shallow hip above), gambrel (two-slope gable, barn-like), none; any of them may have projecting eaves (overhang), "
     "upturned corners (upturn) and lower tiers (skirts). Reply with one JSON object only."
 )
 

@@ -28,3 +28,6 @@ landmark3d/web/vendor/
 
 # Local tool downloads (KTX-Software, validated by SHA-256 at install)
 .tools/
+
+# Photo pack downloaded for research (third-party licences); never commit
+tmp/

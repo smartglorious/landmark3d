@@ -157,3 +157,58 @@ def _why(policy: str, conflicts: list) -> str:
     if policy == "v1_default":
         return "no accepted observation: the version 1 facade is kept"
     return policy
+
+
+# ----------------------------------------------------------------------------- M3 exit gate: grid alignment
+LINE_TOLERANCE = 0.05            # PRODUCTION_BASELINE 5.3: within 5% of the facade height or width
+ALIGN_CONFIDENCE = 0.7           # only accepted observations count
+
+
+def _unit_lines(lines: list, flip: bool) -> list:
+    """Photo-coordinate lines as shares of the facade between the first and last line (0 at the bottom for floors)."""
+    lo, hi = lines[0], lines[-1]
+    span = hi - lo
+    if span <= 0:
+        return []
+    return [round((hi - v) / span, 6) if flip else round((v - lo) / span, 6) for v in lines]
+
+
+def built_lines(side: dict, part_height: float) -> tuple[list, list]:
+    """The floor and bay lines the build draws on one applied side, as shares of its height and length."""
+    floors, bays = int(side["floors"]), int(side["bays"])
+    lh = float(side["level_height"])
+    h = max(1e-6, float(part_height))
+    floor = sorted({0.0, 1.0} | {round(min(1.0, k * lh / h), 6) for k in range(floors + 1)})
+    bay = [round(k / bays, 6) for k in range(bays + 1)]
+    return floor, bay
+
+
+def alignment(spec: dict, observations: list) -> dict:
+    """Share of the observed floor and bay lines that the built grid reproduces within LINE_TOLERANCE, over the
+    accepted observations of every applied side (plan M3 exit gate; baseline 5.3). None values mean not measurable."""
+    from . import quality
+    per, f_hits, f_all, b_hits, b_all = [], 0, 0, 0, 0
+    for part in spec.get("parts") or []:
+        grid = part.get("observed_grid") or {}
+        for side in grid.get("sides") or []:
+            if not side.get("applied") or "floors" not in side:
+                continue
+            bf, bb = built_lines(side, part.get("height", 0))
+            for o in observations:
+                if _source(o) not in side.get("photos", []) or float(o.get("confidence", 0)) < ALIGN_CONFIDENCE:
+                    continue
+                of = _unit_lines(o.get("floor_lines") or [], flip=True)
+                ob = _unit_lines(o.get("bay_lines") or [], flip=False)
+                fm = quality.line_match(of, bf, LINE_TOLERANCE)
+                bm = quality.line_match(ob, bb, LINE_TOLERANCE)
+                if fm is not None:
+                    f_hits += round(fm * len(of))
+                    f_all += len(of)
+                if bm is not None:
+                    b_hits += round(bm * len(ob))
+                    b_all += len(ob)
+                per.append({"part": part.get("id"), "side": side.get("side"), "observation": o.get("id"),
+                            "floor_line_match": fm, "bay_line_match": bm})
+    return {"floor_line_match": round(f_hits / f_all, 4) if f_all else None,
+            "bay_line_match": round(b_hits / b_all, 4) if b_all else None,
+            "observations": per}

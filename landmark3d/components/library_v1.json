@@ -1,5 +1,5 @@
 {
-  "library_version": "1.0.0",
+  "library_version": "1.1.0",
   "note": "M1 contract. Components with status 'planned' declare their intended LODs in planned_lods but have no generators yet; a generator is added with its vertical slice (M2+). 'lods' may only name generators registered in landmark3d/detail/registry.py.",
   "components": [
     {
@@ -609,6 +609,129 @@
         }
       ],
       "note": "Four-legged lattice mast with horizontal bracing."
+    },
+    {
+      "id": "string_course",
+      "status": "implemented",
+      "semantic_type": "facade_band",
+      "milestone": "M4",
+      "style_tags": [
+        "classical",
+        "colonial",
+        "beaux_arts"
+      ],
+      "parameters": {
+        "height_m": {
+          "min": 0.05,
+          "max": 0.8,
+          "default": 0.25
+        },
+        "projection_m": {
+          "min": 0.02,
+          "max": 0.4,
+          "default": 0.08
+        }
+      },
+      "material_slots": [
+        "trim"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "string_course"
+        }
+      ],
+      "note": "Thin band around the outline at a floor line."
+    },
+    {
+      "id": "roof_gutter_trim",
+      "status": "implemented",
+      "semantic_type": "roof_trim",
+      "milestone": "M4",
+      "style_tags": [
+        "any"
+      ],
+      "parameters": {
+        "fascia_height_m": {
+          "min": 0.05,
+          "max": 0.6,
+          "default": 0.25
+        },
+        "gutter_width_m": {
+          "min": 0.05,
+          "max": 0.4,
+          "default": 0.15
+        }
+      },
+      "material_slots": [
+        "trim"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "roof_gutter"
+        }
+      ],
+      "note": "Fascia board and open gutter channel along the eave."
+    },
+    {
+      "id": "bundled_tube_assembly",
+      "status": "implemented",
+      "semantic_type": "tower_massing",
+      "milestone": "M4",
+      "style_tags": [
+        "contemporary",
+        "high_rise"
+      ],
+      "parameters": {
+        "cell_m": {
+          "min": 1.0,
+          "max": 40.0,
+          "default": 6.0
+        }
+      },
+      "material_slots": [
+        "wall"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "bundled_tubes"
+        }
+      ],
+      "note": "Square tubes on a grid, each stopping at its own height."
+    },
+    {
+      "id": "sign_frieze_panel",
+      "status": "implemented",
+      "semantic_type": "facade_feature",
+      "milestone": "M4",
+      "style_tags": [
+        "any"
+      ],
+      "parameters": {
+        "height_m": {
+          "min": 0.2,
+          "max": 6.0,
+          "default": 1.2
+        },
+        "depth_m": {
+          "min": 0.02,
+          "max": 0.6,
+          "default": 0.12
+        }
+      },
+      "material_slots": [
+        "trim",
+        "accent"
+      ],
+      "lods": [
+        {
+          "level": 0,
+          "generator": "sign_panel"
+        }
+      ],
+      "note": "Framed sign or frieze panel on one face."
     }
   ]
 }
