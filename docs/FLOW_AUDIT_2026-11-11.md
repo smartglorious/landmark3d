@@ -169,3 +169,25 @@ Effects:
 4. **Codex quota per project:** about 10–20 image generations (2 min each) on the first texture run; cached after.
    Acceptable as default, or only on request?
 5. **Commit now** (P1): may I commit the current work in logical commits (no push)?
+
+---
+
+## 6. Implementation status (2026-11-11)
+
+Owner approved the plan and the recommended answers to section 5 ("bắt đầu từ P1–P12"): A2.5 added, opening
+assemblies on by default, photo-exact mode off and hidden, Codex generation on by default, local commits (no push).
+
+| # | Status | Where |
+|---|---|---|
+| P1 | done: 4 commits of the earlier work | git log |
+| P2 | done: phase `textures` + approval `texture_review` (A2.5) between A2 and build; old projects get the phases as passed when a later phase has run (`project._with_all_phases`); per-part Accept / Regenerate with note / Use colour (`autotex.set_override`, `input/texture_overrides.json`, part of the cache key); API `GET /texture_review`, `POST /texture_review/{part}`; web panel | `pipeline._run_phase`, `autotex.review`, `server.py`, `app.js loadTextureReview` |
+| P3 | done: projection (photo-exact only) → generation → photo crops only for faces still bare and only with an AI | `autotex.run_v2` |
+| P4 | done: feature faces (disc, entrance, pediment, colonnade, column, balcony, narrow panels and balustrades) get a face-specific elevation of the span holding them, pasted into the bay elevation; at most 12 faces per project, ranked by feature importance; identical layouts share one image | `genfacade.face_features`, `feature_span`, `segment_layout`, `generate_face`, `compose` |
+| P5 | done: one facade pass accepted on its deterministic validator (`facade_issues`, `check_facade`), one judge reading of the final model; `facade_gate: judge` restores the old rounds. A2 shows the layouts (`GET /layouts`). Observations stay off: unmeasured (M3 gate not run) | `pipeline.build_spec`, `genfacade.preview_layouts` |
+| P6 | done: setting `opening_assemblies` (default on) builds M2 window assemblies with the v2 flag off | `detail/engine.engine_settings`, `blender_build.py` |
+| P7 | done: generated skins packed one atlas per part (`output/skin_atlas_<part>.jpg`), full-width cells, 12 Mpx budget over all skins | `textures.build_job` |
+| P8 | done: seamless Codex tiles for roof and wall materials (glass, metal, owner textures excluded), checked for colour, sky and structure; photo swatches as fallback | `genfacade.material_tiles` |
+| P9 | done: glass of curtain-wall parts gets a square module of its mullion and floor grid as its material tile (works on tapered towers) | `genfacade.curtain_grid`, `CURTAIN_PROMPT` |
+| P10 | done: setting `photo_exact` (default off) gates projection; the camera card is hidden unless it is on | `autotex.run_v2`, `app.js` |
+| P11 | done: Codex image calls recorded as step `codex_image` in `logs/ai_calls.jsonl` and the phase usage; generated-content summary and failures at A3 and in the release notes | `ai.record_call`, `pipeline.release` |
+| P12 | see `reports/benchmark/BENCHMARK.md` (2026-11-11 entry) | |

@@ -12,8 +12,8 @@ Implementation authority: `docs/DETAIL_ENGINE_V2_PLAN.md` and `docs/PRODUCTION_B
   - `footprint_ai.py`: AI footprint pick or trace.
   - `ai.py`: Claude Code / Codex CLI and env-var providers.
 - `landmark3d/pipeline.py`:
-  - Phases and approvals.
-  - `build_spec`: AI massing → photo triage → viewpoint matching → review rounds → best candidate → judge → judge-gated facade rounds.
+  - Phases and approvals (A1, A2, A2.5 texture review, A3, A6). The `textures` phase (after A2) runs `autotex.run_v2`; the build makes no AI call.
+  - `build_spec`: AI massing → photo triage → viewpoint matching → review rounds → best candidate → plan_fit → one facade pass accepted on deterministic checks → one judge reading (setting `facade_gate: judge` restores judge-gated rounds).
   - Checks: `material_errors`, `orientation_errors`, `facade_issues`.
 - `landmark3d/geom.py`:
   - Pure geometry, shared with Blender: footprints, tapers, roofs (`overhang`, `upturn`, `skirts` tiers: `build_skirt`, `roof_total_height`).
@@ -22,14 +22,14 @@ Implementation authority: `docs/DETAIL_ENGINE_V2_PLAN.md` and `docs/PRODUCTION_B
 - `landmark3d/plan_fit.py`: fits the AI massing to the OSM footprint (whole model, then ground volumes), run in `build_spec`; CLI `refit-plan`.
 - `landmark3d/spec.py`: spec schema, `check_structure` (support incl. skirt tiers via `support_levels`, cantilevers, decks, orientation, height).
 - Detail Engine v2 contracts (M1, behind `detail_engine_v2`, off by default): `landmark3d/detail/` (types, registry, accounting, flag-gated `engine.expand`), `components/library_v1.json`, `observations.py`, `spec_v2.py`, `facade_grammar.py`, and JSON schemas in `schemas/`.
-- `landmark3d/autotex.py`: automatic textures. `run_v2` does bay tiles on the grid, unique faces, QA, mirror repair, harmonise, swatches.
+- `landmark3d/autotex.py`: the texture step. `run_v2`: projection (photo-exact mode only) → Codex-generated elevations per part and per feature face (`smarttex/genfacade`) → photo crops (AI plan + check) only for faces still bare → generated material tiles, then swatches. A2.5 per-part choices in `input/texture_overrides.json` (`set_override`, `review`).
 - `landmark3d/engine/`:
   - `blender_build.py`: runs inside Blender (photo panels drop generated detail on their face).
   - `runner.py`: build and preview jobs.
 - `landmark3d/installer.py`: `setup` command (pinned three.js r160 into `web/vendor/`, Blender discovery, doctor). OS installers: `install.ps1` / `install.cmd` / `install.sh`; launchers `Landmark3D.cmd` / `start.sh`; versions in `requirements.lock`.
 - `landmark3d/server.py` + `web/`: local web app on port 8770; publisher details in `web/about.json`. `tests/`: pytest; tests never touch the network (see `tests/conftest.py`).
 - `docs/`: production-quality detail-engine plan and measurable release baseline. Read `docs/README.md` before architectural work. Milestone status: `docs/M0_M8_STATUS.md`. **Start of a session: read `docs/SESSION_LOG.md`** (state left behind, where to continue).
-- `landmark3d/smarttex/` (Smart Texture, `docs/SMART_TEXTURE_PLAN.md`): `metrics` (T0 texture metrics), `lens` (T1 undistortion, panorama check), `keypoints` + `camera` (T2 camera solve against the spec), `run` (AI keypoints → `input/cameras.json`; T3 editor helpers `editor_*`, web card "Camera ảnh"), `quads` (fixes to autotex crops and swatches), `bake` (T5 projective texturing from solved cameras, used by `autotex.run_v2`), `masks` (T4 sky / foliage / occluder labels used by `bake`). CLI: `cameras`, `texture-metrics`. OpenCV is a dependency.
+- `landmark3d/smarttex/` (Smart Texture, `docs/SMART_TEXTURE_PLAN.md`): `metrics` (T0 texture metrics), `lens` (T1 undistortion, panorama check), `keypoints` + `camera` (T2 camera solve against the spec), `run` (AI keypoints → `input/cameras.json`; T3 editor helpers `editor_*`, web card "Camera ảnh"), `quads` (fixes to autotex crops and swatches), `bake` (T5 projective texturing from solved cameras, used by `autotex.run_v2`), `masks` (T4 sky / foliage / occluder labels used by `bake`); T2–T5 run only with the `photo_exact` setting. `genfacade`: Codex image generation (layouts, per-part elevations, feature faces, material and curtain-wall tiles, checks, cache in `reports/genfacade/`). CLI: `cameras`, `texture-metrics`. OpenCV is a dependency.
 - `landmark3d/quality.py` (M6 metrics, baseline thresholds, gate; writes `reports/quality.json`), `capture.py` (M7 photo and pose readiness), `photogrammetry.py` (M7 adapter, placement), `generative.py` (M8, nothing admitted without an approved provider).
 
 ## Rules
