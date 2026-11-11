@@ -241,7 +241,7 @@ def list_projects() -> list[dict]:
     out = []
     for d in sorted(projects_dir().iterdir()):
         if (d / "project.json").exists():
-            st = json.loads((d / "project.json").read_text(encoding="utf-8"))
+            st = _with_all_phases(json.loads((d / "project.json").read_text(encoding="utf-8")))
             current = next((p for p in PHASE_IDS if st["phases"][p]["status"] not in ("done", "approved")), None)
             out.append({"id": st["id"], "name": st["name"], "location": st["location"], "current": current,
                         "status": st["phases"][current]["status"] if current else "complete"})

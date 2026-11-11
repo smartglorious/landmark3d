@@ -219,3 +219,14 @@ def test_codex_image_calls_are_counted_in_ai_usage(tmp_path, monkeypatch):
         assert genfacade.codex_generate("draw", []).is_file()
     s = log.summary()
     assert s["by_step"]["codex_image"]["calls"] == 1 and s["by_step"]["codex_image"]["rejected"] == 0
+
+
+def test_project_list_shows_projects_made_before_the_texture_phase(prj):
+    """The project list read project.json directly: an old project without the new phases broke the whole page."""
+    from landmark3d.project import list_projects
+    st = json.loads(prj.state_file.read_text(encoding="utf-8"))
+    for k in ("textures", "texture_review"):
+        st["phases"].pop(k)
+    prj.state_file.write_text(json.dumps(st), encoding="utf-8")
+    rows = list_projects()
+    assert [r["id"] for r in rows] == [prj.id] and rows[0]["current"]
