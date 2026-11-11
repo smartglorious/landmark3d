@@ -625,20 +625,33 @@ Create a SEAMLESS, TILEABLE, square texture of the {slot} material "{material}" 
 - Even, flat daylight; no shadows of objects, no windows, no edges, corners, gutters or ornaments, no sky, no plants,
   no text. Opposite edges must continue seamlessly so the image repeats without visible seams.
 {feedback}"""
+CURTAIN_PROMPT = """Use the image generation tool to create ONE image, then reply with only the full path of the image file.
+
+Create a SEAMLESS, TILEABLE, square texture of the glass curtain wall ("{material}") of {name}, seen perfectly straight
+on (no perspective), covering {size:g} m x {size:g} m: exactly {cols} glass panels across and {rows} floor(s) high,
+vertical mullions evenly spaced, a spandrel or transom band at each floor line.
+- Glass colour about RGB {rgb}; copy the real curtain wall from the attached photos: mullion colour and width, glass
+  tint, spandrels, and soft, even reflections of the sky and the city (no single strong object reflected).
+- No frame around the image, no building edges, no sky beyond the glass, no text. The left edge must continue into the
+  right edge and the top into the bottom (the grid lines cross the edges at the same places), so it repeats seamlessly.
+{feedback}"""
+CURTAIN_TILE_M = 6.0              # about this wide: whole mullion bays, the floors that fit
 MATERIAL_WORLD_M = 3.0
 MATERIAL_STRUCTURE_MAX = 18.0     # large-scale structure of a material tile (2x a plain swatch: tiles and bricks allowed)
 
 
-def check_material(img: Image.Image, srgb) -> list[str]:
+def check_material(img: Image.Image, srgb, curtain: bool = False) -> list[str]:
+    """Problems of a generated material tile. A curtain wall reflects the sky and carries its mullion grid, so the sky
+    and structure tests do not apply to it and its colour may stray further."""
     from . import quads
     probs = []
     a = np.asarray(img.convert("RGB").resize((128, 128), Image.LANCZOS))
-    if metrics.sky_share(np.asarray(img.convert("RGB"))) > metrics.THRESHOLDS["sky_share_max"]:
+    if not curtain and metrics.sky_share(np.asarray(img.convert("RGB"))) > metrics.THRESHOLDS["sky_share_max"]:
         probs.append("there is sky in the image: show only the material")
     if srgb is not None and float(np.linalg.norm(np.median(a.reshape(-1, 3), axis=0).astype(np.float32)
-                                                 - np.asarray(srgb[:3], np.float32))) > COLOUR_MAX:
+                                                 - np.asarray(srgb[:3], np.float32))) > COLOUR_MAX * (1.4 if curtain else 1):
         probs.append(f"the colour is far from about RGB {tuple(srgb[:3])}")
-    if quads.structure(a) > MATERIAL_STRUCTURE_MAX:
+    if not curtain and quads.structure(a) > MATERIAL_STRUCTURE_MAX:
         probs.append("the image has large shapes, edges or shading: it must be an even, repeating material only")
     return probs
 
@@ -647,15 +660,31 @@ def _stem(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))[:60]
 
 
-def generate_material(prj, spec: dict, material: str, slot: str, refs: list, generate=None) -> dict:
+def curtain_grid(part: dict) -> tuple[int, int, float]:
+    """(columns, floors, tile size m) of a square curtain-wall tile on the part's mullion and floor grid."""
+    fac = part.get("facade") or {}
+    bay = max(0.6, float(fac.get("bay_spacing", 1.5)))
+    lvl = max(2.0, float(fac.get("level_height", 3.5)))
+    cols = max(2, round(CURTAIN_TILE_M / bay))
+    size = cols * bay
+    return cols, max(1, round(size / lvl)), round(size, 3)
+
+
+def generate_material(prj, spec: dict, material: str, slot: str, refs: list, generate=None,
+                      part: dict | None = None) -> dict:
     """A seamless tile of one material (cached in reports/genfacade/mat_<material>.png). Returns {"img" (seamless,
     512 px), "world_size_m", "accepted", "problems"} or {"error"}."""
     from . import quads
     srgb = ((spec.get("materials") or {}).get(material) or {}).get("srgb")
     what = ("roof covering: tile or sheet shape, size and courses, joints" if slot == "roof"
             else "wall surface: stucco, brick, stone or concrete grain, joints and weathering")
-    base = dict(name=spec.get("name", ""), slot=slot, material=material, size=MATERIAL_WORLD_M,
-                rgb=tuple(srgb[:3]) if srgb else "as in the photos", what=what)
+    size, prompt_t = MATERIAL_WORLD_M, MATERIAL_PROMPT
+    extra = {}
+    if slot == "curtain":                    # glass curtain wall (P9): one square module of the mullion grid
+        cols, rows, size = curtain_grid(part or {})
+        prompt_t, extra = CURTAIN_PROMPT, {"cols": cols, "rows": rows}
+    base = dict(name=spec.get("name", ""), slot=slot, material=material, size=size,
+                rgb=tuple(srgb[:3]) if srgb else "as in the photos", what=what, **extra)
     ref_paths = [prj.root / r for r in refs][:2]
     out_dir = prj.root / "reports" / "genfacade"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -665,18 +694,18 @@ def generate_material(prj, spec: dict, material: str, slot: str, refs: list, gen
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
     if meta.get("key") == key and img_path.is_file():
         img = Image.open(img_path).convert("RGB")
-        return {"img": quads.seamless(img, 512), "world_size_m": MATERIAL_WORLD_M, "cached": True,
+        return {"img": quads.seamless(img, 512), "world_size_m": size, "cached": True,
                 "accepted": meta.get("accepted", False), "problems": meta.get("problems", [])}
     feedback, problems, img, attempts = "", [], None, 0
     for _ in range(2):
         attempts += 1
         try:
-            got = (generate or codex_generate)(MATERIAL_PROMPT.format(**base, feedback=feedback),
+            got = (generate or codex_generate)(prompt_t.format(**base, feedback=feedback),
                                                [p for p in ref_paths if p.is_file()])
         except Exception as exc:
             return {"error": f"generation failed: {str(exc)[:200]}", "attempts": attempts}
         img = Image.open(got).convert("RGB")
-        problems = check_material(img, srgb)
+        problems = check_material(img, srgb, curtain=slot == "curtain")
         if not problems:
             break
         feedback = "The previous attempt had these problems, fix them: " + "; ".join(problems) + "."
@@ -684,7 +713,7 @@ def generate_material(prj, spec: dict, material: str, slot: str, refs: list, gen
     meta_path.write_text(json.dumps({"key": key, "problems": problems, "attempts": attempts,
                                      "accepted": not problems, "slot": slot, "generator": GENERATOR,
                                      "references": refs[:2]}, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"img": quads.seamless(img, 512), "world_size_m": MATERIAL_WORLD_M, "cached": False,
+    return {"img": quads.seamless(img, 512), "world_size_m": size, "cached": False,
             "accepted": not problems, "problems": problems, "attempts": attempts}
 
 
@@ -700,14 +729,19 @@ def material_tiles(prj, spec: dict, refs_for, skip: set, notes: list, generate=N
     for p in spec.get("parts", []):
         if p.get("enabled", True) is False:
             continue
+        curtain = (p.get("facade") or {}).get("opening_type") == "curtain_wall"
         for slot in ("roof", "wall"):
             m = (p.get("material") or {}).get(slot)
-            if m and m in mats and m not in skip and m != "opening" and not is_glass(m, mats[m]):
-                want.setdefault(m, (slot, p["id"]))
+            if not m or m not in mats or m in skip or m == "opening":
+                continue
+            if slot == "wall" and curtain and is_glass(m, mats[m]):
+                want[m] = ("curtain", p)                       # glass of a curtain wall: the mullion module
+            elif not is_glass(m, mats[m]):
+                want.setdefault(m, (slot, p))
     out = {}
-    for m, (slot, pid) in sorted(want.items()):
-        refs = refs_for(pid)
-        res = generate_material(prj, spec, m, slot, refs, generate)
+    for m, (slot, part) in sorted(want.items()):
+        refs = refs_for(part["id"])
+        res = generate_material(prj, spec, m, slot, refs, generate, part=part)
         notes.append({"generated": f"material {m}", "material": True,
                       **{k: res.get(k) for k in ("problems", "attempts", "cached", "accepted", "error")}})
         if res.get("error") or not res.get("accepted"):

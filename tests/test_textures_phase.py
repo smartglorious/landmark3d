@@ -174,11 +174,24 @@ def test_generated_material_tiles_for_roof_and_wall_not_glass(prj, codex):
     """P8: roof and wall materials get a generated seamless tile, labelled generated; glass gets none."""
     from landmark3d import autotex, textures
     res = autotex.run_v2(prj, None)
-    assert res["generated_tiles"] == ["roof", "stucco"]
-    assert not any("glass" in c and "TILEABLE" in c for c in codex)
+    assert res["generated_tiles"] == ["glass", "roof", "stucco"]      # glass only as the curtain-wall module (P9)
+    assert all("curtain wall" in c for c in codex if '"glass"' in c)
     sw = {t["material"]: t for t in textures.load(prj)["textures"] if t.get("mode") == "repeat"}
     assert sw["roof"]["licence"] == "ai_generated" and sw["roof"]["from"] == "generated tile"
     n = len(codex)
     autotex.set_override(prj, "hall", "regenerate")          # another run: the tiles come from the cache
     autotex.run_v2(prj, None)
     assert len([c for c in codex[n:] if "TILEABLE" in c]) == 0
+
+
+def test_curtain_wall_glass_gets_a_generated_mullion_module(prj, codex):
+    """P9: the glass of a curtain-wall part gets a seamless module of its mullion and floor grid as a material tile."""
+    from landmark3d import autotex, textures
+    from landmark3d.smarttex import genfacade
+    res = autotex.run_v2(prj, None)
+    assert "glass" in res["generated_tiles"]
+    prompt = next(c for c in codex if "curtain wall" in c)
+    cols, rows, size = genfacade.curtain_grid(prj.read_json("spec/landmark_spec.json")["parts"][1])
+    assert f"exactly {cols} glass panels across" in prompt and (cols, rows) == (4, 2) and size == 6.0
+    sw = {t["material"]: t for t in textures.load(prj)["textures"] if t.get("mode") == "repeat"}
+    assert sw["glass"]["world_size_m"] == 6.0 and sw["glass"]["licence"] == "ai_generated"
