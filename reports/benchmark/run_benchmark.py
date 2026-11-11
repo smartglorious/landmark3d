@@ -21,8 +21,17 @@ HELDOUT = [
     {"name": "Landmark 81", "location": "720A Điện Biên Phủ, Bình Thạnh, TP. Hồ Chí Minh, Việt Nam", "lat": 10.79490, "lon": 106.72180},
     {"name": "Chợ Bình Tây", "location": "57A Tháp Mười, Quận 6, TP. Hồ Chí Minh, Việt Nam", "lat": 10.74970, "lon": 106.65100},
 ]
+# Second held-out set (2026-11-11): the first one has been seen. Run ONCE with --heldout2, tool frozen.
+HELDOUT2 = [
+    {"name": "Bảo tàng Thành phố Hồ Chí Minh", "location": "65 Lý Tự Trọng, Quận 1, TP. Hồ Chí Minh, Việt Nam", "lat": 10.77630, "lon": 106.69990},
+    {"name": "Nhà thờ Tân Định", "location": "289 Hai Bà Trưng, Quận 3, TP. Hồ Chí Minh, Việt Nam", "lat": 10.78880, "lon": 106.69070},
+    {"name": "Bảo tàng Mỹ thuật Thành phố Hồ Chí Minh", "location": "97A Phó Đức Chính, Quận 1, TP. Hồ Chí Minh, Việt Nam", "lat": 10.76970, "lon": 106.69900},
+    {"name": "Vietcombank Tower", "location": "5 Công trường Mê Linh, Quận 1, TP. Hồ Chí Minh, Việt Nam", "lat": 10.77640, "lon": 106.70560},
+]
 if "--heldout" in sys.argv:
     LANDMARKS = HELDOUT
+if "--heldout2" in sys.argv:
+    LANDMARKS = HELDOUT2
 NOTE = "benchmark auto-approval by Claude (user asked to run the benchmark)"
 c = httpx.Client(base_url=B, timeout=60)
 log = open("reports/benchmark/benchmark_log.txt", "a", encoding="utf-8")
@@ -37,7 +46,7 @@ def say(*a):
 
 RESET = {"Dinh Độc Lập": "research", "Nhà hát Thành phố Hồ Chí Minh": "research", "Landmark 81": "research",
          "Chợ Bình Tây": "research", "Bưu điện Trung tâm Sài Gòn": "spec", "Nhà thờ Đức Bà Sài Gòn": "spec", "Bitexco Financial Tower": "spec",
-         "Ủy Ban Nhân Dân Thành Phố Hồ Chí Minh": "research"}
+         "Ủy Ban Nhân Dân Thành Phố Hồ Chí Minh": "research", **{l["name"]: "research" for l in HELDOUT2}}
 LIMIT_WORDS = ("hit your", "usage limit", "rate limit")
 existing = {p["name"]: p["id"] for p in c.get("/api/projects").json()}
 done = {}
@@ -49,7 +58,7 @@ for lm in [l for l in LANDMARKS if not ONLY or any(o in l["name"] for o in ONLY)
     say("project", pid)
     c.post(f"/api/projects/{pid}/run")
     t0 = time.time()
-    while time.time() - t0 < 3600:
+    while time.time() - t0 < 4 * 3600:           # spec + generated textures can take two hours
         time.sleep(15)
         d = c.get(f"/api/projects/{pid}").json()
         if d["running"]:
@@ -77,7 +86,7 @@ for lm in [l for l in LANDMARKS if not ONLY or any(o in l["name"] for o in ONLY)
             say(pid, done[pid])
             break
         waiting = [k for k, v in ph.items() if v["status"] == "waiting_approval"]
-        if waiting and waiting[0] in ("sources_review", "spec_review"):
+        if waiting and waiting[0] in ("sources_review", "spec_review", "texture_review"):
             r = c.post(f"/api/projects/{pid}/approve", json={"phase": waiting[0], "decision": "approved", "notes": NOTE})
             if r.status_code != 200:
                 done[pid] = f"approval of {waiting[0]} refused: {r.text[:300]}"
