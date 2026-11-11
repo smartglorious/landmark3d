@@ -1,0 +1,38 @@
+frozen 2026-11-11 20:16:01  commit b45d8f0929f9f16ca88119c4b3a2fddd0f2b141e  tree d2b19bd552a56970bbd8c0a5cb5679076e71b378  clean True
+settings (machine-local values, private keys left out):
+{
+ "routing": {
+  "research": "claude",
+  "vision": "claude",
+  "spec": "claude"
+ },
+ "cross_check": true,
+ "photo_review_rounds": 3,
+ "facade_pass": true,
+ "bake_ao": false,
+ "ao_size": 256,
+ "generative_components": false,
+ "bake_normal": false,
+ "normal_size": 256,
+ "normal_ratio": 0.6,
+ "facade_observations": false,
+ "opening_assemblies": true,
+ "detail_engine_v2": true,
+ "facade_review_rounds": 2,
+ "facade_gate": "checks",
+ "judge": true,
+ "judge_samples": 3,
+ "auto_textures": true,
+ "photo_exact": false,
+ "generated_textures": true,
+ "satellite_provider": "esri",
+ "default_budgets": {
+  "triangles_max": 50000,
+  "triangles_target": 40000,
+  "bytes_max": 5000000,
+  "bytes_target": 4500000,
+  "materials_max": 10,
+  "compression": "draco",
+  "texture_max_px": 2048
+ }
+}
