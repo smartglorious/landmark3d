@@ -1037,7 +1037,7 @@ def run_v2(prj: Project, provider) -> dict:
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = texture_key(prj, spec) + "-v16"
+    h = texture_key(prj, spec) + "-v17"
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
     from .smarttex import bake, quads

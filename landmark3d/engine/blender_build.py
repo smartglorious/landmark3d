@@ -641,8 +641,8 @@ def main():
     if size >= budgets["bytes_max"]:
         errors.append(f"GLB {size} bytes >= limit {budgets['bytes_max']}")
     # The per-part facade atlases (P7) are one design material, the facade image, split only for resolution
-    n_design = len([m for m in used if not m.startswith("L3D_skin_")]) + (1 if any(m.startswith("L3D_skin_")
-                                                                                for m in used) else 0)
+    facade_img = lambda m: m.startswith("L3D_skin_") or m == "L3D_panels"      # photo panels are facade images too
+    n_design = len([m for m in used if not facade_img(m)]) + (1 if any(facade_img(m) for m in used) else 0)
     if n_design > budgets.get("materials_max", 10):
         errors.append(f"materials {n_design} > limit {budgets['materials_max']}")
     if budgets.get("compression") == "draco" and comp != "draco":

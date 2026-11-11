@@ -557,12 +557,25 @@ def _wall_fill(img: Image.Image) -> tuple:
     return tuple(int(v) for v in np.median(a[lum >= np.percentile(lum, 55)], axis=0))
 
 
+def match_colour(img: Image.Image, ref: Image.Image) -> Image.Image:
+    """Per-channel mean and spread of img in Lab moved to those of ref (two generations of one wall differ in tone)."""
+    import cv2
+    a = cv2.cvtColor(np.asarray(img.convert("RGB")), cv2.COLOR_RGB2LAB).astype(np.float32)
+    r = cv2.cvtColor(np.asarray(ref.convert("RGB")), cv2.COLOR_RGB2LAB).astype(np.float32)
+    for c in range(3):
+        m, s = a[..., c].mean(), a[..., c].std() + 1e-6
+        a[..., c] = (a[..., c] - m) * (r[..., c].std() / s if c == 0 else 1.0) + r[..., c].mean()
+    return Image.fromarray(cv2.cvtColor(a.clip(0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB))
+
+
 def compose(base: Image.Image | None, seg: Image.Image, face: dict, span, h_px: int) -> Image.Image:
     """The face texture: the bay elevation (or the plain wall colour) with the feature span pasted at its place."""
     L = float(face["length_m"])
     if base is None:
         base = Image.new("RGB", (max(8, int(round(L * h_px / max(1e-6, float(face["z1"]) - float(face["z0"]))))), h_px),
                          _wall_fill(seg))
+    else:
+        seg = match_colour(seg, base)       # drawn separately: bring it to the tone of the part's bay elevation
     out = base.copy()
     x0, x1 = int(round(span[0] / L * out.width)), int(round(span[1] / L * out.width))
     if x1 - x0 >= 2:
