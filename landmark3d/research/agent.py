@@ -63,10 +63,16 @@ OSM building:part outlines (local metres; reuse a polygon when it matches the ph
 Researched facts: {facts}
 Reviewer feedback on EARLIER versions of this model (problems the reviewer saw and wants fixed - never features to reproduce): {notes}
 
-Photos are attached in this order: photo 1, photo 2, ...{satellite_note} Look at them first. List to yourself every volume, its plan
-shape (sharp corners, rounded corners, fully rounded ends, circular), its storeys, which street facade it is
-parallel to, and its facade floor by floor. Then return
-{{"parts": [...], "materials": {{...}}, "views": [...], "notes": [...]}}.
+Photos are attached in this order: photo 1, photo 2, ...{satellite_note} Look at them first. Make an INVENTORY of
+every volume you can see in any photo: every piece of the building with its own roof or its own wall plane - each
+wing, nave and lower aisles, side chapels, transept arms, clerestory, annexes and sacristies, porches, apse and apse
+chapels, towers, belfries, spires, domes, pavilions, gatehouses. A building seen from several sides usually has many
+volumes (a cathedral 15-30, a large public building 8-20); do not merge different roofs or wall planes into one box.
+For each volume note its plan shape (sharp corners, rounded corners, fully rounded ends, circular, polygonal), its
+storeys, which street facade it is parallel to, and its facade floor by floor. Every volume gets its own part.
+Then return
+{{"volumes": [{{"name": "...", "part": "<part id>", "seen_in": [photo numbers]}}, ...],
+  "parts": [...], "materials": {{...}}, "views": [...], "notes": [...]}}.
 
 Each part:
 {{"id": "podium" | "tower_1" | ..., "kind": "hall|tower|wing|dome|portal|podium|crown",

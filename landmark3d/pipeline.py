@@ -175,6 +175,7 @@ def build_spec(prj: Project) -> dict:
     ai_notes = []
     review_log = []
     photo_views_out = []
+    volumes_out = []
     photos_used = []
     ai_error = None
     quality = None
@@ -215,6 +216,8 @@ def build_spec(prj: Project) -> dict:
             facts=json.dumps({k: v.get("value") for k, v in facts.items()}, ensure_ascii=False),
             notes=json.dumps(notes + [st.get("notes", "")], ensure_ascii=False), satellite_note=sat_note)
         prompt += agent.user_directive(st, notes=False)
+        from . import inventory as inventory_mod
+        inv = {"list": None}          # the volume inventory of the first answer; later answers must keep it
         try:
             def massing_check(obj):
                 errs = spec_mod.validate_massing(obj)
@@ -223,7 +226,9 @@ def build_spec(prj: Project) -> dict:
                 if not obj["parts"]:
                     return ["parts must not be empty"]
                 from . import exposure
-                return (material_errors(obj, int(st["budgets"].get("materials_max", 10)))
+                vol = (inventory_mod.first_errors(obj) if inv["list"] is None
+                       else inventory_mod.coverage_errors(obj["parts"], inv["list"]))
+                return (vol + material_errors(obj, int(st["budgets"].get("materials_max", 10)))
                         + orientation_errors(obj["parts"], main)
                         + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts)
                         + exposure.feature_issues(obj["parts"], main))     # features on buried walls
@@ -234,6 +239,10 @@ def build_spec(prj: Project) -> dict:
                 ai_notes_extra = [f"AI could not fix: {e}" for e in res.validation_errors[:6]]
             else:
                 ai_notes_extra = []
+            ids = {p.get("id") for p in massing.get("parts", [])}
+            inv["list"] = [v for v in massing.get("volumes") or [] if isinstance(v, dict) and v.get("part") in ids]
+            massing["volumes"] = inv["list"]
+            prj.log("volume inventory", {"volumes": len(inv["list"]), "parts": len(massing.get("parts", []))})
             normalise_glass(massing)
             rounds = int(settings_mod.load().get("photo_review_rounds", 2) or 0)
             if rounds > 0 and photos:
@@ -313,6 +322,7 @@ def build_spec(prj: Project) -> dict:
                         break
             ai_parts = massing["parts"]
             photo_views_out = massing.get("views") or []
+            volumes_out = massing.get("volumes") or []
             if ai_parts:
                 # The AI model replaces the OSM parts (it received their outlines and may reuse them); adding both
                 # stacked duplicate volumes on top of each other.
@@ -355,6 +365,7 @@ def build_spec(prj: Project) -> dict:
         "photos": photos_used,                      # "photo n" in views / renders = photos[n-1]
         "views": photo_views_out,
         "observations": observation_log,            # empty unless the facade_observations setting is on
+        "volumes": volumes_out,                     # the volume inventory the AI listed from the photos
     }
     if settings_mod.load().get("facade_observations", False):
         # M3: the observed floor and bay grid, with the person's corrections, feeds the facade of each part.
@@ -638,6 +649,11 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
                             "(right) at the same extent and scale: check positions, plan shapes, sizes and "
                             "orientations of every volume against it."))
         prompt += agent.user_directive(st)
+        if massing.get("volumes"):
+            from . import inventory as inventory_mod
+            prompt += ("\n\nVOLUME INVENTORY (from your first look at the photos; each keeps its own part, same id - you "
+                       "may ADD volumes you now see, listing them in \"volumes\", never drop one): "
+                       + inventory_mod.text(massing["volumes"]))
 
         def review_check(o):
             scores = o.get("scores")
@@ -685,8 +701,15 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
         if new_views and matched and [{k: v[k] for k in keys} for v in new_views] != [{k: m[k] for k in keys}
                                                                                      for m in matched]:
             entry["views_changed"] = True
+        from . import inventory as inventory_mod
+        obj["volumes"] = inventory_mod.merged(massing.get("volumes"), obj)
         massing = obj
         candidates.append(massing)
+    if len(candidates) > 1 and not (log and log[-1].get("verdict") == "match"):
+        # only candidates that pass the checks (the first draft may have been accepted with errors, e.g. a lost
+        # volume) are offered; the select step must not trade volumes for a cleaner silhouette
+        valid = [c for c in candidates if not check(c)]
+        candidates = valid if valid else candidates
     if len(candidates) > 1 and not (log and log[-1].get("verdict") == "match"):
         massing, pick = select_best(prj, provider, candidates, photos, sat, main, base_materials, st, out_root)
         log.append(pick)
@@ -1161,14 +1184,16 @@ def spec_blocking_issues(prj: Project) -> list[dict]:
 def review_issues(spec: dict) -> list[dict]:
     """Issues shown with the plan at A2 and A3 besides the structure check: unknown materials (blocking) and generated
     components (marked as generated, never observed)."""
-    from . import generative, exposure
+    from . import generative, exposure, inventory as inventory_mod
+    lost = [{"severity": "warning", "part": None, "code": "missing_volume", "message": m}
+            for m in inventory_mod.coverage_errors(spec.get("parts", []), spec.get("volumes") or [])]
     hidden = []
     try:
         hidden = [{"severity": "warning", "part": m.split(":")[0].replace("part ", ""), "code": "hidden_feature",
                    "message": m} for m in exposure.feature_issues(spec, spec["footprint"]["local"])]
     except (KeyError, TypeError, ValueError):
         pass
-    return unknown_material_issues(spec) + generative.review_items(spec) + hidden
+    return unknown_material_issues(spec) + generative.review_items(spec) + hidden + lost
 
 
 def unknown_material_issues(spec: dict) -> list[dict]:

@@ -110,7 +110,8 @@ def test_ai_massing_used_in_spec(tmp_path, monkeypatch):
         {"id": "main", "kind": "hall", "footprint": "main", "base_z": 0, "height": 12, "roof": {"type": "flat", "parapet": 1}},
         {"id": "dome_1", "kind": "dome", "footprint": {"circle": {"cx": 0, "cy": 0, "r": 9}}, "base_z": 12, "height": 4,
          "roof": {"type": "dome", "height": 9}}],
-        "materials": {"wall": {"srgb": [230, 220, 200]}, "roof": {"srgb": [90, 110, 120]}}}
+        "materials": {"wall": {"srgb": [230, 220, 200]}, "roof": {"srgb": [90, 110, 120]}},
+        "volumes": [{"name": "hall", "part": "main"}, {"name": "dome", "part": "dome_1"}]}
     fake = FakeProvider([json.dumps(massing)])
     monkeypatch.setattr(ai, "get", lambda task="research", name=None: fake)
     sp = pipeline.build_spec(prj)
