@@ -19,6 +19,7 @@ Implementation authority: `docs/DETAIL_ENGINE_V2_PLAN.md` and `docs/PRODUCTION_B
   - Pure geometry, shared with Blender: footprints, tapers, roofs (`overhang`, `upturn`, `skirts` tiers: `build_skirt`, `roof_total_height`).
   - Facades: `facade_layout`, one bay grid per facade run; `check_facade`.
   - `curtain_wall`, `features`.
+- `landmark3d/plan_fit.py`: fits the AI massing to the OSM footprint (whole model, then ground volumes), run in `build_spec`; CLI `refit-plan`.
 - `landmark3d/spec.py`: spec schema, `check_structure` (support incl. skirt tiers via `support_levels`, cantilevers, decks, orientation, height).
 - Detail Engine v2 contracts (M1, behind `detail_engine_v2`, off by default): `landmark3d/detail/` (types, registry, accounting, flag-gated `engine.expand`), `components/library_v1.json`, `observations.py`, `spec_v2.py`, `facade_grammar.py`, and JSON schemas in `schemas/`.
 - `landmark3d/autotex.py`: automatic textures. `run_v2` does bay tiles on the grid, unique faces, QA, mirror repair, harmonise, swatches.
@@ -27,7 +28,9 @@ Implementation authority: `docs/DETAIL_ENGINE_V2_PLAN.md` and `docs/PRODUCTION_B
   - `runner.py`: build and preview jobs.
 - `landmark3d/installer.py`: `setup` command (pinned three.js r160 into `web/vendor/`, Blender discovery, doctor). OS installers: `install.ps1` / `install.cmd` / `install.sh`; launchers `Landmark3D.cmd` / `start.sh`; versions in `requirements.lock`.
 - `landmark3d/server.py` + `web/`: local web app on port 8770; publisher details in `web/about.json`. `tests/`: pytest; tests never touch the network (see `tests/conftest.py`).
-- `docs/`: production-quality detail-engine plan and measurable release baseline. Read `docs/README.md` before architectural work.
+- `docs/`: production-quality detail-engine plan and measurable release baseline. Read `docs/README.md` before architectural work. Milestone status: `docs/M0_M8_STATUS.md`. **Start of a session: read `docs/SESSION_LOG.md`** (state left behind, where to continue).
+- `landmark3d/smarttex/` (Smart Texture, `docs/SMART_TEXTURE_PLAN.md`): `metrics` (T0 texture metrics), `lens` (T1 undistortion, panorama check), `keypoints` + `camera` (T2 camera solve against the spec), `run` (AI keypoints → `input/cameras.json`; T3 editor helpers `editor_*`, web card "Camera ảnh"), `quads` (fixes to autotex crops and swatches), `bake` (T5 projective texturing from solved cameras, used by `autotex.run_v2`), `masks` (T4 sky / foliage / occluder labels used by `bake`). CLI: `cameras`, `texture-metrics`. OpenCV is a dependency.
+- `landmark3d/quality.py` (M6 metrics, baseline thresholds, gate; writes `reports/quality.json`), `capture.py` (M7 photo and pose readiness), `photogrammetry.py` (M7 adapter, placement), `generative.py` (M8, nothing admitted without an approved provider).
 
 ## Rules
 - **Never commit** `projects/` (licensed photos, the owner's photos, Esri imagery, .blend/.glb) or images under `reports/` (made from them). Scan staged files for keys and emails before pushing.
