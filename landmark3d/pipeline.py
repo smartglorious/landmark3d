@@ -948,12 +948,41 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
                    "buttresses, thin lines = floors), a few bays per part. Compare each with the photos: number of "
                    "window rows, window shape (round / pointed / segmental arch, square), paired lights, round "
                    "windows, blank bands, buttresses - and correct the facade keys where they differ.")
+    dropped: list = []
+
+    def tool_fix(o):
+        """What the tool corrects itself before checking: opening words, unknown feature types, and features on
+        buried walls or outside their part (dropped and noted, not a reason to reject the whole answer)."""
+        o = repair_answer(o)
+        if not isinstance(o, dict) or not isinstance(o.get("parts"), list):
+            return o
+        known = set(spec_mod.FEATURE_TYPES)
+        parts = []
+        for q in o["parts"]:
+            if isinstance(q, dict) and isinstance(q.get("features"), list):
+                bad = [f for f in q["features"] if not isinstance(f, dict) or f.get("type") not in known]
+                if bad:
+                    dropped.append(f"part {q.get('id')}: dropped {len(bad)} feature(s) of unknown type")
+                q = dict(q, features=[f for f in q["features"] if f not in bad])
+            parts.append(q)
+        o = dict(o, parts=parts)
+        if main:
+            m = merged(o)
+            fixed_parts, notes = exposure_mod.drop_hidden_features(m, main)
+            if notes:
+                dropped.extend(notes)
+                feats = {fp["id"]: fp.get("features") for fp in fixed_parts}
+                o = dict(o, parts=[dict(q, features=feats.get(q.get("id"), q.get("features")))
+                                   if isinstance(q, dict) and "features" in q else q for q in o["parts"]])
+        return o
+    from . import exposure as exposure_mod
     try:
         obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
                              validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main)
                                                                      + _fixable_feature_issues(merged(o), main)
                                                                      if main else []),
-                             images=list(sheets or [])[:4] + photos[:4] + ([sheet] if sheet else []), retries=2)
+                             images=list(sheets or [])[:4] + photos[:4] + ([sheet] if sheet else []), retries=2,
+                             repair=tool_fix)
     except Exception as exc:
         entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
         return massing, entry
@@ -964,6 +993,8 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
     entry.update({"verdict": f"facades refined, {n_feat} detail features", "differences": obj.get("notes", [])[:8]})
     if fixed:
         entry["layout_fixes"] = fixed[:12]
+    if dropped:
+        entry["features_dropped"] = sorted(set(dropped))[:12]
     prj.log("facade pass", {"features": n_feat})
     return out, entry
 

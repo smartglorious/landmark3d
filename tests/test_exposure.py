@@ -79,3 +79,34 @@ def test_facade_pass_shows_the_current_layouts_and_the_exposed_walls(tmp_path, m
     pipeline.facade_pass(prj, None, {"parts": parts, "materials": {}}, [], lambda o: [], prj.state(), main=MAIN)
     assert seen["images"] and str(seen["images"][-1]).endswith("facade_layouts.jpg")
     assert "CURRENT facade layout" in seen["prompt"] and "EXPOSED WALLS" in seen["prompt"]
+
+
+def test_facade_answer_is_kept_with_bad_features_dropped(tmp_path, monkeypatch):
+    """One feature of an unknown type or on a buried wall no longer throws away the whole facade answer."""
+    import importlib
+    import json
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.project import Project
+    from landmark3d.research import ai
+    prj = Project.create("Salvage Hall", "X", lat=1.0, lon=2.0)
+    parts = nave_and_transept()
+    parts[0]["footprint"] = rect(0, 0, 50, 26)
+    for p in parts:
+        p.update(roof={"type": "gable", "height": 4}, features=[])
+    answer = {"parts": [{"id": "transept", "facade": {"opening_type": "arch", "bay_spacing": 4, "level_height": 5},
+                         "features": [{"type": "disc", "facing_deg": 0, "z": 8, "diameter": 4},      # buried wall
+                                      {"type": "disc", "facing_deg": 90, "z": 8, "diameter": 4},     # exposed end
+                                      {"type": "statue", "facing_deg": 90, "z": 1}]}]}               # unknown
+
+    class Fake(ai.Provider):
+        def chat(self, system, prompt, **k):
+            return ai.AIResult(json.dumps(answer), "fake", "m", [])
+    out, entry = pipeline.facade_pass(prj, Fake("m"), {"parts": parts, "materials": {}}, [], lambda o: [],
+                                      prj.state(), main=MAIN)
+    t = next(p for p in out["parts"] if p["id"] == "transept")
+    assert [f["facing_deg"] for f in t["features"]] == [90] and t["facade"]["opening_type"] == "arch"
+    assert len(entry["features_dropped"]) == 2

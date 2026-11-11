@@ -112,3 +112,12 @@ def test_gables_stand_one_per_bay_on_the_wall_top():
                          m)
     assert used == 5 * 5                                                   # 5 gables (24 m / 4 m, ends kept clear)
     assert max(v[2] for v in m.verts) == pytest.approx(8.5)
+
+
+def test_every_feature_type_the_engine_draws_passes_the_schema():
+    """The schema and the geometry must know the same feature types (a 'gables' answer was rejected once)."""
+    from landmark3d import spec as spec_mod
+    for kind in geom.DEPTH_FEATURES + ("disc", "panel", "mast"):
+        part = {"id": "p", "footprint": "main", "base_z": 0, "height": 10, "roof": {"type": "flat"},
+                "features": [{"type": kind, "facing_deg": 0, "z": 1}]}
+        assert spec_mod.validate_massing({"parts": [part], "materials": {"wall": {"srgb": [1, 2, 3]}}}) == [], kind

@@ -139,3 +139,37 @@ def exposure_text(spec_or_parts, main) -> str:
             for r in vis[:6]) or "none") + ("; hidden " + ", ".join(f"{r['facing_deg']:g} deg" for r in hid[:6])
                                             if hid else ""))
     return "\n".join(lines)
+
+
+def drop_hidden_features(spec_or_parts, main) -> tuple[list, list[str]]:
+    """Copy of the parts without the facing features that sit on a mostly hidden wall of a part that HAS an exposed
+    wall (the facade step was told where the exposed walls are), and without point features outside their part.
+    Returns (parts, notes). The tool fixes these itself instead of rejecting a whole facade answer."""
+    parts = spec_or_parts["parts"] if isinstance(spec_or_parts, dict) else spec_or_parts
+    fx = faces(parts, main)
+    main_t = [tuple(p) for p in main]
+    out, notes = [], []
+    for p in parts:
+        rows = fx.get(p.get("id"), [])
+        if not rows or not any(r["exposed"] >= HIDDEN_MAX for r in rows) or not p.get("features"):
+            out.append(p)
+            continue
+        try:
+            ring = geom.footprint_polygon(p["footprint"], main_t)
+        except Exception:
+            ring = None
+        keep = []
+        for ft in p["features"]:
+            if ft.get("type") in FACED and ft.get("facing_deg") is not None and not ft.get("around"):
+                f = face_for(rows, ft["facing_deg"])
+                if f is not None and f["exposed"] < HIDDEN_MAX:
+                    notes.append(f"part {p['id']}: dropped the {ft['type']} facing {float(ft['facing_deg']):g} deg "
+                                 f"(wall {1 - f['exposed']:.0%} hidden)")
+                    continue
+            if ring is not None and ft.get("x") is not None and ft.get("y") is not None and \
+                    not geom.inside_with_tol((float(ft["x"]), float(ft["y"])), ring, POINT_TOL_M):
+                notes.append(f"part {p['id']}: dropped the {ft.get('type')} outside the part")
+                continue
+            keep.append(ft)
+        out.append(dict(p, features=keep))
+    return out, notes

@@ -18,6 +18,8 @@ OSM_ROOF = {"flat": "flat", "gabled": "gable", "hipped": "hip", "pyramidal": "py
             "round": "dome", "saltbox": "gable", "cone": "pyramid"}
 
 OPENING_TYPES = ["rect", "arch", "square", "oculus", "storefront", "none"]
+FEATURE_TYPES = ["disc", "panel", "mast", "column", "balustrade", "balcony", "colonnade", "pediment", "finial",
+                 "cresting", "gables"]
 WINDOW_SHAPE = {"arch_shape": {"enum": ["round", "pointed", "segmental"]},
                 "lights": {"type": "integer", "minimum": 1, "maximum": 4},
                 "oculus": {"type": "number", "minimum": 0, "maximum": 4},
@@ -99,8 +101,7 @@ PART_SCHEMA = {
         "cantilever_of": {"type": "string"},
         "features": {"type": "array", "maxItems": 120, "items": {
             "type": "object", "required": ["type"],
-            "properties": {"type": {"enum": ["disc", "panel", "mast", "column", "balustrade", "balcony", "colonnade",
-                                             "pediment", "finial", "cresting"]},
+            "properties": {"type": {"enum": FEATURE_TYPES},
                            "count": {"type": "integer", "minimum": 1, "maximum": 80},
                            "spacing": {"type": "number", "exclusiveMinimum": 0},
                            "pair_gap": {"type": "number", "minimum": 0, "maximum": 4},
