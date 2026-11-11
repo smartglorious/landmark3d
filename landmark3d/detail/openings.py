@@ -47,7 +47,8 @@ def dimensions(win, lod: int) -> dict:
     clear = max(0.0, float(win.get("frame_half", w / 2 + FRAME_MAX)) - w / 2)
     frame = min(FRAME_MAX, w * 0.2, clear) if lod >= 1 else 0.0
     recess = min(RECESS_MAX, max(0.08, w * 0.06)) if lod >= 1 else 0.0
-    return {"w": w, "h": h, "frame": frame, "recess": recess, "arch": win.get("kind") == "arch"}
+    return {"w": w, "h": h, "frame": frame, "recess": recess, "arch": win.get("kind") == "arch",
+            "oculus": win.get("kind") == "oculus", "shape": win.get("shape", "round")}
 
 
 def emit(mesh, win, lod: int) -> int:
@@ -55,20 +56,30 @@ def emit(mesh, win, lod: int) -> int:
     before = mesh.triangles()
     d = dimensions(win, lod)
     w, h, frame, recess, arch = d["w"], d["h"], d["frame"], d["recess"], d["arch"]
+    oculus, shape_kind = d["oculus"], d["shape"]
     z0 = float(win["z0"])
     at = _at(win)
     glass_y = 0.02 if lod >= 1 else 0.05
     segs = arch_segments(w, lod)
-    shape = geom.arch_outline(w, h, segs) if arch else [(-w / 2, 0.0), (w / 2, 0.0), (w / 2, h), (-w / 2, h)]
+    shape = geom.opening_outline(dict(win, w=w, h=h), segs)
     mesh.f([mesh.v(*at(x, glass_y, z0 + z)) for x, z in shape], "opening")
     if lod == 0:
+        return mesh.triangles() - before
+    if oculus:                                   # a round window: a stone ring around the glass
+        n = max(12, 2 * segs)
+        outer = [(x, z - frame) for x, z in geom.circle_outline(w + 2 * frame, n)]
+        inner = geom.circle_outline(w, n)
+        for i in range(n):
+            a, b = outer[i], outer[(i + 1) % n]
+            c, dd = inner[(i + 1) % n], inner[i]
+            mesh.f([mesh.v(*at(x, recess, z0 + z)) for x, z in (a, b, c, dd)], "trim")
         return mesh.triangles() - before
     spring = max(0.0, h - w / 2) if arch else h
     sill_z = z0 - 0.12
     geom._solid(mesh, at, -w / 2 - frame, w / 2 + frame, 0.0, recess + 0.05, sill_z, z0, "trim")
     if arch:
-        outer = geom.arch_outline(w + 2 * frame, h + frame, segs)
-        inner = geom.arch_outline(w, h, segs)
+        outer = geom.arch_outline(w + 2 * frame, h + frame, segs, shape_kind)
+        inner = geom.arch_outline(w, h, segs, shape_kind)
         plane = recess
         for i in range(len(inner) - 1):                              # the band: jambs and arc, bottom edge excluded
             a, b = outer[i], outer[i + 1]
@@ -106,7 +117,7 @@ def assemble(win, lod: int) -> GeneratedComponent:
 
 
 def window_key(win) -> tuple:
-    return (win.get("run"), round(float(win["s"]), 3), win.get("lv"))
+    return (win.get("run"), round(float(win["s"]), 3), win.get("lv"), win.get("kind"), round(float(win["z0"]), 2))
 
 
 def tri_cost(win, lod: int) -> int:

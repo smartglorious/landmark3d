@@ -63,10 +63,19 @@ OSM building:part outlines (local metres; reuse a polygon when it matches the ph
 Researched facts: {facts}
 Reviewer feedback on EARLIER versions of this model (problems the reviewer saw and wants fixed - never features to reproduce): {notes}
 
-Photos are attached in this order: photo 1, photo 2, ...{satellite_note} Look at them first. List to yourself every volume, its plan
-shape (sharp corners, rounded corners, fully rounded ends, circular), its storeys, which street facade it is
-parallel to, and its facade floor by floor. Then return
-{{"parts": [...], "materials": {{...}}, "views": [...], "notes": [...]}}.
+Photos are attached in this order: photo 1, photo 2, ...{satellite_note} Look at them first. Make an INVENTORY of
+every volume you can see in any photo: every piece of the building with its own roof or its own wall plane - each
+wing, nave and lower aisles, side chapels, transept arms, clerestory, annexes and sacristies, porches, apse and apse
+chapels, towers, belfries, spires, domes, pavilions, gatehouses. A building seen from several sides usually has many
+volumes (a cathedral 15-30, a large public building 8-20); do not merge different roofs or wall planes into one box.
+Repeated roof structures are volumes too: a roof with several parallel ridges, saw-tooth roofs, raised monitors or
+clerestory strips, and rows of transverse gables - give each ridge, monitor or gable row its own narrow part with
+its own roof (e.g. a market hall with 12 parallel gabled roofs is 12 parts, not one hip roof).
+For each volume note its plan shape (sharp corners, rounded corners, fully rounded ends, circular, polygonal), its
+storeys, which street facade it is parallel to, and its facade floor by floor. Every volume gets its own part.
+Then return
+{{"volumes": [{{"name": "...", "part": "<part id>", "seen_in": [photo numbers]}}, ...],
+  "parts": [...], "materials": {{...}}, "views": [...], "notes": [...]}}.
 
 Each part:
 {{"id": "podium" | "tower_1" | ..., "kind": "hall|tower|wing|dome|portal|podium|crown",
@@ -75,6 +84,8 @@ Each part:
    | {{"rounded_rect": {{"cx","cy","w","d","rot_deg","r"}}}}      (r = corner radius in m)
    | {{"stadium": {{"cx","cy","w","d","rot_deg"}}}}               (both short ends fully rounded)
    | {{"circle": {{"cx","cy","r"}}}}
+   | {{"ngon": {{"cx","cy","r","n","arc_deg","rot_deg"}}}}   (regular polygon of n sides; with arc_deg < 360 only that
+        part of it, closed by a straight side: an apse is n 8, arc_deg 180, its round side facing rot_deg)
    | {{"polygon": [[x,y],...]}},
  "base_z": m, "height": m (wall top above base_z),
  "cantilever_of": "<id of the host part>" (upper floors projecting past the part below, or a deck fixed to a tower),
@@ -85,12 +96,18 @@ Each part:
           "overhang": m (eaves projecting past the walls), "upturn": m (eave corners curling up),
           "skirts": [{{"depth": m, "rise": m, "gap": m, "overhang": m}}, ...] (lower roof tiers, bottom first)}},
  "facade": {{
-   "opening_type": "rect|arch|square|storefront|none|curtain_wall", "level_height": m, "bay_spacing": m,
+   "opening_type": "rect|arch|square|oculus|storefront|none|curtain_wall", "level_height": m, "bay_spacing": m,
    "opening_width": m, "opening_height": m, "pediment": true|false,
+   "arch_shape": "round|pointed|segmental" (arch heads: semicircular, Gothic pointed, or shallow),
+   "lights": 1-3 (coupled windows: n narrow lights side by side in each bay), "oculus": m (a round window of this
+   diameter above each window, in the wall before the next floor),
    "floors": [{{"from": 0, "to": 0, "opening_type": "...", "bay_spacing": m, "opening_width": m,
-               "opening_height": m, "pediment": true|false, "awning": true|false}}, ...]   (floor 0 = ground),
+               "opening_height": m, "pediment": true|false, "awning": true|false, "arch_shape", "lights",
+               "oculus", "openings": false (a blank floor: no windows)}}, ...]   (floor 0 = ground; "openings":
+               false goes INSIDE a floor entry for a blank floor - never on the whole facade of a wall with windows),
    "entrance": {{"width": m, "height": m, "facing_deg": deg}}   (a large arched portal, e.g. a main entrance),
-   "pilasters": {{"every": n_bays, "width": m, "depth": m}},     (flat columns between bays)
+   "pilasters": {{"every": n_bays, "width": m, "depth": m, "style": "pilaster|buttress"}},   (flat columns, or
+                buttresses: deep stepped piers, between bays)
    "cornice": m (0 = none), "bands": true|false}},
  "material": {{"wall": "<material>", "roof": "<material>", "trim": "<material>", "accent": "<material>"}}}}
 materials: {{"<name>": {{"srgb": [r,g,b], "roughness": 0..1, "metallic": 0..1}}}} - sRGB 0-255 sampled from the photos.
@@ -103,7 +120,15 @@ Modelling guidance:
 - Classical / masonry: describe EVERY floor in facade.floors (e.g. ground arched shop windows, floor 1 square
   windows, floor 2 arched windows, floor 3 rectangular windows with pediments), the central entrance portal,
   pilasters between bays, cornice on top, parapet as a balustrade. Count the bays in the photo for bay_spacing.
+- Count the window ROWS of each wall in the photos: a wall with one row of windows and a blank band above gets
+  "openings": false on the blank floors, not a window on every floor. Say whether arches are round, pointed or
+  segmental (arch_shape), whether windows are paired (lights: 2) and whether round windows (oculus) sit above them.
 - A podium is usually a separate rectangular volume along the street, not the whole site outline.
+- Apses and chevets are POLYGONAL unless clearly round: an "ngon" with arc_deg 180 (n 8 or 10) and a "hip" roof;
+  radiating chapels are small ngon volumes around it, each with its own hip roof. Do not use a circle with a cone.
+- Spires: roof "spire" (an octagonal spire with broaches, corner pinnacles and gabled lucarnes) on the tower top;
+  "pyramid" only for plain pyramid roofs. A belfry is the top storey of the tower with tall louvred openings.
+- Aisles or wings whose bays each carry a small gable: feature "gables" on that wall (see the facade step).
 - Tapering towers (spires, bud / bullet shapes, pyramids of glass): ONE part with "taper" instead of a stack of
   ever smaller boxes; a slanted top is roof "shed". Several tapered parts may be stacked (top outline of one =
   base outline of the next).
@@ -171,8 +196,13 @@ footprints, heights, positions or roofs):
 The attached photos show the real building. Your only task is the FACADES and the visible DETAILS of each part,
 so the model reads like the photos up close. For every part, return its complete "facade" and "features":
 - facade: opening_type, level_height, bay_spacing (count the bays in the photos), opening sizes, "floors"
-  (one entry per floor band that differs: ground, piano nobile, attic ...), "entrance" (main portal), "pilasters",
-  "cornice", "bands"; glass parts keep "curtain_wall" (mullion spacing, band per floor).
+  (one entry per floor band that differs: ground, piano nobile, attic ...; "openings": false for a blank floor),
+  "entrance" (main portal), "pilasters" (with "style": "buttress" for deep stepped piers), "cornice", "bands";
+  glass parts keep "curtain_wall" (mullion spacing, band per floor).
+  Window shape, per facade or floor: "arch_shape": "round" | "pointed" | "segmental" (look at the heads: round
+  Romanesque or classical arches are NOT pointed Gothic ones); "lights": 2 or 3 for coupled windows; "oculus":
+  diameter of a round window above each window; opening_type "oculus" for a row of round windows only.
+  Count the window ROWS per wall in the photos: put windows only on the floors that have them.
 - features (relative to the part; z = height of the centre above the part's base; facing_deg = direction the
   facade faces, 0 = east, 90 = north; offset = metres along that facade from its middle):
   {{"type": "disc", "facing_deg", "z", "diameter", "offset", "material"}}   clock faces, rose windows, oculi
@@ -193,6 +223,8 @@ so the model reads like the photos up close. For every part, return its complete
   {{"type": "finial", "x", "y", "z", "height", "radius", "style": "spike|ball", "material"}}   roof ornaments; x, y in
       model coordinates; z = where it stands above the part's base, default the wall top
   {{"type": "cresting", "z", "height", "spacing", "material"}}   iron railing on a roof ridge or flat roof top
+  {{"type": "gables", "facing_deg", "spacing", "width", "height", "depth", "count", "offset"}}   a row of small
+      gables standing on the wall top, one per bay (aisle chapels, dormers), each with its own pitched roof
   Only details clearly visible in the photos; at most 30 per part. A flat panel remains right for signs, friezes and
   low reliefs. Statues cannot be modelled: leave them out rather than standing a board in their place.
 - Walls that differ: "sides": [{{"facing_deg", any of opening_type, bay_spacing, opening_width, opening_height, sill,

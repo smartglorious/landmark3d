@@ -542,7 +542,7 @@ def main():
     articulation_report = {"placed": [], "skipped": []}
     for part, poly, gm in meshes:
         feature_left -= geom.features(poly, part["base_z"], part["base_z"] + part["height"], part.get("taper"),
-                                      part.get("features"), gm, max(0, feature_left))
+                                      part.get("features"), gm, max(0, feature_left), roof=part.get("roof"))
         art = detail_placement.place_articulation(gm, poly, part, flag_on, max(0, feature_left))
         feature_left -= art["triangles"]
         articulation_report["placed"] += art["placed"]

@@ -41,7 +41,7 @@ Create a facade texture for a 3D model of {name}: a perfectly straight-on ORTHOG
 no vanishing lines) of one wall of the part "{part}", exactly {bays} bay(s) wide and {floors} floor(s) high.
 - The LAST attached image is the LAYOUT drawn from the 3D model: grey = wall, dark = window or door openings,
   thin lines = floor levels. Your image must have exactly the same proportions ({aspect}), and every opening must be
-  exactly where the dark shapes are (same count, positions and sizes; arched tops where the layout shows arches).
+  exactly where the dark shapes are (same count, positions, sizes and outlines: {words}).
 - The other attached image(s) are PHOTOS of the real building: copy its architectural style, wall colour and
   material, window joinery and colour, mouldings, cornices, pilasters and ornament from them{materials}.
 - Fill the whole frame edge to edge with the wall: the top edge of the image is the top of the wall (cornice), the
@@ -108,45 +108,101 @@ def _floor_rules(fac: dict, k: int) -> dict:
     return rule
 
 
+def wall_elements(part: dict, length: float, facing_deg: float = 270.0, entrance: bool = False,
+                  sides: bool = False) -> dict:
+    """The model's own facade layout (geom.facade_layout, the one the build uses) of one straight wall of the part,
+    `length` metres long, facing `facing_deg`: windows (x from the left end seen from outside, z0, w, h, kind, shape),
+    pilasters (x, w, style), the entrance, floor lines. So the generated image and the built openings agree."""
+    from .. import geom
+    fac = dict(part.get("facade") or {})
+    if not entrance:
+        fac.pop("entrance", None)
+    if not sides:
+        fac.pop("sides", None)
+    h = float(part["height"])
+    f = math.radians(facing_deg)
+    n = (math.cos(f), math.sin(f))
+    d = (-n[1], n[0])                                # along the wall, left to right seen from outside
+    depth = max(8.0, length)
+    a = (0.0, 0.0)
+    b = (d[0] * length, d[1] * length)
+    ring = [a, b, (b[0] - n[0] * depth, b[1] - n[1] * depth), (a[0] - n[0] * depth, a[1] - n[1] * depth)]
+    lay = geom.facade_layout(ring, 0.0, h, fac)
+    on_wall = lambda o: o[0] * n[0] + o[1] * n[1] > 0.95
+    x_of = lambda p: p[0] * d[0] + p[1] * d[1]
+    wins = [{"x": x_of(w["p"]), "z0": w["z0"], "w": w["w"], "h": w["h"], "kind": w["kind"],
+             "shape": w.get("shape", "round")} for w in lay["windows"] if on_wall(w["o"])
+            and geom.has_openings(fac)]          # a blank wall, as the build does
+    pl = fac.get("pilasters") if isinstance(fac.get("pilasters"), dict) else {}
+    pils = [{"x": x_of(p["pt"][0]), "w": p["w"], "style": pl.get("style", "pilaster")} for p in lay["pilasters"]
+            if on_wall(p["pt"][2])]
+    ent = lay.get("entrance")
+    ent = ({"x": x_of(ent["p"]), "w": ent["w"], "h": ent["h"]} if ent and on_wall(ent["o"]) else None)
+    lh = float(fac.get("level_height") or 0) or h
+    floors = max(1, int((h - float(fac.get("cornice", 0) or 0) + 0.3) // lh))
+    return {"windows": wins, "pilasters": pils, "entrance": ent, "floors": floors, "level_height": lh, "height": h,
+            "length": length}
+
+
+def _draw_wall(el: dict, x0: float, x1: float) -> tuple[Image.Image, list]:
+    """Layout image of the stretch [x0, x1] of a wall: grey wall, light bands = pilasters or buttresses, dark =
+    openings in their real outline (round / pointed / segmental arches, oculi, coupled lights), floor lines."""
+    from .. import geom
+    h = el["height"]
+    W, H = max(8, int(round((x1 - x0) * PX_PER_M))), int(round(h * PX_PER_M))
+    im = Image.new("RGB", (W, H), (180, 180, 180))
+    dr = ImageDraw.Draw(im)
+    X = lambda x: (x - x0) * PX_PER_M
+    Z = lambda z: H - z * PX_PER_M
+    for k in range(1, el["floors"]):
+        dr.line((0, Z(k * el["level_height"]), W, Z(k * el["level_height"])), fill=(120, 120, 120),
+                width=max(2, PX_PER_M // 10))
+    for p in el["pilasters"]:
+        dr.rectangle((X(p["x"] - p["w"] / 2), 0, X(p["x"] + p["w"] / 2), H),
+                     fill=(215, 215, 215) if p["style"] == "buttress" else (200, 200, 200))
+    ops = []
+    for w in el["windows"]:
+        if w["x"] + w["w"] / 2 < x0 or w["x"] - w["w"] / 2 > x1:
+            continue
+        outline = geom.opening_outline(w, 12)
+        dr.polygon([(X(w["x"] + x), Z(w["z0"] + z)) for x, z in outline], fill=(40, 40, 40))
+        ops.append(((X(w["x"] - w["w"] / 2)) / W, Z(w["z0"] + w["h"]) / H, X(w["x"] + w["w"] / 2) / W,
+                    Z(w["z0"]) / H))
+    e = el["entrance"]
+    if e and e["x"] + e["w"] / 2 > x0 and e["x"] - e["w"] / 2 < x1:
+        dr.polygon([(X(e["x"] + x), Z(z)) for x, z in geom.arch_outline(e["w"], e["h"], 12)], fill=(40, 40, 40))
+    return im, ops
+
+
+def describe(el: dict) -> str:
+    """Words for what the layout shows, so the generator draws the right shapes."""
+    kinds = {}
+    for w in el["windows"]:
+        key = "oculus" if w["kind"] == "oculus" else (f"{w['shape']}-arched" if w["kind"] == "arch" else "square-headed")
+        kinds[key] = kinds.get(key, 0) + 1
+    words = []
+    for k in kinds:
+        words.append({"oculus": "round windows (oculi, drawn as dark circles)",
+                      "round-arched": "ROUND-arched windows (semicircular heads, not pointed)",
+                      "pointed-arched": "POINTED (Gothic) arched windows",
+                      "segmental-arched": "SEGMENTAL (shallow) arched windows",
+                      "square-headed": "square-headed windows"}[k])
+    styles = {p["style"] for p in el["pilasters"]}
+    if styles:
+        words.append("the light vertical bands are " + (" and ".join(sorted(
+            "BUTTRESSES (deep piers, often with stone bands)" if s == "buttress" else "PILASTERS" for s in styles))))
+    return "; ".join(words)
+
+
 def layout(part: dict, n_bays: int) -> tuple[Image.Image, dict]:
-    """The model's elevation of n bays of the part: wall, openings per floor (rect or arched), floor lines.
-    Returns (image, {"floors", "bay_m", "height_m", "openings": [(x0, y0, x1, y1) fractions]})."""
+    """The model's elevation of n bays of the part (the build's own layout on a straight wall of n bays).
+    Returns (image, {"floors", "bay_m", "height_m", "openings": [(x0, y0, x1, y1) fractions], "n_bays", "words"})."""
     fac = part.get("facade") or {}
     bay = max(1.0, float(fac.get("bay_spacing", 4.0)))
-    h = float(part["height"])
-    lh = float(fac.get("level_height") or 0) or h
-    floors = max(1, round(h / lh))
-    W, H = int(round(n_bays * bay * PX_PER_M)), int(round(h * PX_PER_M))
-    im = Image.new("RGB", (W, H), (180, 180, 180))
-    d = ImageDraw.Draw(im)
-    ops = []
-    for k in range(floors):
-        rule = _floor_rules(fac, k)
-        if rule.get("openings") is False:
-            continue
-        ow = float(rule.get("opening_width", min(1.6, 0.45 * bay)))
-        oh = float(rule.get("opening_height", min(2.4, 0.6 * lh)))
-        sill = float(rule.get("sill", 0.9 if k else 0.3))
-        z0 = k * lh + sill
-        z1 = min(h - 0.3, z0 + oh)
-        if z1 <= z0:
-            continue
-        arch = str(rule.get("opening_type", "rect")).startswith("arch")
-        for b in range(n_bays):
-            cx = (b + 0.5) * bay
-            x0, x1 = (cx - ow / 2) * PX_PER_M, (cx + ow / 2) * PX_PER_M
-            y0, y1 = H - z1 * PX_PER_M, H - z0 * PX_PER_M
-            if arch:
-                r = (x1 - x0) / 2
-                d.rectangle((x0, y0 + r, x1, y1), fill=(40, 40, 40))
-                d.pieslice((x0, y0, x1, y0 + 2 * r), 180, 360, fill=(40, 40, 40))
-            else:
-                d.rectangle((x0, y0, x1, y1), fill=(40, 40, 40))
-            ops.append((x0 / W, y0 / H, x1 / W, y1 / H))
-    for k in range(1, floors):
-        y = H - k * lh * PX_PER_M
-        d.line((0, y, W, y), fill=(120, 120, 120), width=max(2, PX_PER_M // 10))
-    return im, {"floors": floors, "bay_m": bay, "height_m": h, "openings": ops, "n_bays": n_bays}
+    el = wall_elements(part, n_bays * bay)
+    im, ops = _draw_wall(el, 0.0, n_bays * bay)
+    return im, {"floors": el["floors"], "bay_m": bay, "height_m": el["height"], "openings": ops, "n_bays": n_bays,
+                "words": describe(el)}
 
 
 # ----------------------------------------------------------------------------------------------- checks
@@ -209,6 +265,7 @@ def generate_part(prj, spec: dict, part: dict, refs: list, generate=None,
     mat_note = f" (the wall material is '{wall}', about RGB {tuple(wall_srgb)})" if wall_srgb else ""
     ref_paths = [prj.root / r for r in refs][:2]
     base_prompt = dict(name=spec.get("name", ""), part=part["id"], bays=n, floors=info["floors"],
+                       words=info.get("words") or "as drawn",
                        aspect=f"{lay.width} x {lay.height}, width / height = {lay.width / lay.height:.3f}",
                        materials=mat_note)
     owner = (f"- The owner reviewed an earlier version and asks: {owner_note.strip()}\n" if owner_note.strip() else "")
@@ -346,7 +403,7 @@ no vanishing lines) of one particular stretch of wall, {width:g} m wide and {hei
   lines = floor levels, blue numbered shapes = these architectural features, which must appear exactly there:
 {features}
   Your image must have exactly the same proportions ({aspect}); every opening and feature must be exactly where the
-  layout shows it (same count, positions and sizes).
+  layout shows it (same count, positions, sizes and outlines: {words}).
 - The other attached image(s) are PHOTOS of the real building: copy its architectural style, wall colour and
   material, window joinery, mouldings, cornices, pilasters and ornament, and the real look of each feature{materials}.
 - Fill the whole frame edge to edge with the wall: the top edge of the image is the top of the wall, the bottom edge
@@ -444,30 +501,13 @@ def segment_layout(part: dict, face: dict, span, feats: list) -> tuple[Image.Ima
     X = lambda x: (x - x0) * PX_PER_M
     Z = lambda z: H - z * PX_PER_M
     inside = [f for f in feats if f["box"][2] > x0 and f["box"][0] < x1]
-    hit = lambda a, b, c, e: any(not (c < f["box"][0] - 0.2 or a > f["box"][2] + 0.2 or e < f["box"][1] - 0.2
-                                      or b > f["box"][3] + 0.2) for f in inside)
-    for k in range(1, floors):
-        d.line((0, Z(k * lh), W, Z(k * lh)), fill=(120, 120, 120), width=max(2, PX_PER_M // 10))
-    for k in range(floors):
-        rule = _floor_rules(fac, k)
-        if rule.get("openings") is False:
-            continue
-        ow = float(rule.get("opening_width", min(1.6, 0.45 * bay)))
-        oh = float(rule.get("opening_height", min(2.4, 0.6 * lh)))
-        z0 = k * lh + float(rule.get("sill", 0.9 if k else 0.3))
-        z1 = min(h - 0.3, z0 + oh)
-        arch = str(rule.get("opening_type", "rect")).startswith("arch")
-        for b in range(int(face["n_bays"])):
-            cx = (b + 0.5) * bay
-            if not (x0 <= cx <= x1) or z1 <= z0 or hit(cx - ow / 2, z0, cx + ow / 2, z1):
-                continue
-            box = (X(cx - ow / 2), Z(z1), X(cx + ow / 2), Z(z0))
-            if arch:
-                r = (box[2] - box[0]) / 2
-                d.rectangle((box[0], box[1] + r, box[2], box[3]), fill=(40, 40, 40))
-                d.pieslice((box[0], box[1], box[2], box[1] + 2 * r), 180, 360, fill=(40, 40, 40))
-            else:
-                d.rectangle(box, fill=(40, 40, 40))
+    el = wall_elements(part, L, float(face["facing_deg"]), entrance=True, sides=True)
+    el["windows"] = [w for w in el["windows"] if not any(
+        not (w["x"] + w["w"] / 2 < f["box"][0] - 0.2 or w["x"] - w["w"] / 2 > f["box"][2] + 0.2
+             or w["z0"] + w["h"] < f["box"][1] - 0.2 or w["z0"] > f["box"][3] + 0.2)
+        for f in inside if f["type"] != "entrance")]          # a feature replaces the openings under it
+    base_im, _ = _draw_wall(el, x0, x1)
+    im.paste(base_im.resize(im.size), (0, 0))
     labels = []
     from ..autotex import _font
     font = _font(max(14, PX_PER_M // 2))
@@ -497,7 +537,8 @@ def segment_layout(part: dict, face: dict, span, feats: list) -> tuple[Image.Ima
         d.text(((box[0] + box[2]) / 2 - 6, (box[1] + box[3]) / 2 - 10), str(n), fill=(255, 255, 255), font=font)
         labels.append((n, f"  {n}. {FEATURE_WORDS[kind]}, {c - a:.1f} m wide, {e - b:.1f} m high, "
                       f"{(a + c) / 2 - x0:.1f} m from the left edge, {(b + e) / 2:.1f} m above the base"))
-    return im, {"labels": [t for _, t in sorted(labels)], "width_m": round(x1 - x0, 2), "height_m": h}
+    return im, {"labels": [t for _, t in sorted(labels)], "width_m": round(x1 - x0, 2), "height_m": h,
+                "words": describe(el)}
 
 
 def check_unique(img: Image.Image, wall_srgb=None) -> list[str]:
@@ -514,13 +555,37 @@ def check_unique(img: Image.Image, wall_srgb=None) -> list[str]:
     return probs
 
 
+SKIN_EXPOSED_MIN = 0.15         # faces buried deeper than this get no generated skin (nobody sees them)
+
+
+def exposed_share(spec: dict) -> dict:
+    """{(part id, edge index): exposed share} from exposure.faces (1.0 when it cannot be measured)."""
+    from .. import exposure
+    try:
+        return {(pid, r["edge_index"]): r["exposed"]
+                for pid, rows in exposure.faces(spec, spec["footprint"]["local"]).items() for r in rows}
+    except (KeyError, TypeError, ValueError):
+        return {}
+
+
 def feature_faces(spec: dict, parts: dict, done: set) -> list[tuple]:
-    """[(part id, face, features)] of the faces with features, most important first, at most MAX_FEATURE_FACES."""
-    from .. import autotex
+    """[(part id, face, features)] of the faces with visible features, most important first, at most
+    MAX_FEATURE_FACES. Features whose own patch of wall is buried in another part are left out (measured where the
+    feature is: a rose window between two towers stays, although the towers cover most of that wall)."""
+    from .. import autotex, exposure
     cands = []
+    ex = exposed_share(spec)
+    try:
+        merged = [parts.get(q["id"], q) for q in spec["parts"]] + [q for k, q in parts.items()
+                                                                   if k not in {x["id"] for x in spec["parts"]}]
+        clean, _ = exposure.drop_hidden_features(merged, spec["footprint"]["local"])
+        visible = {q["id"]: q for q in clean}
+    except (KeyError, TypeError, ValueError):
+        visible = {}
     for pid, part in parts.items():
+        part = dict(part, features=(visible.get(pid) or part).get("features"))
         for f in autotex.part_faces(spec, part):
-            if (pid, f["edge_index"]) in done:
+            if (pid, f["edge_index"]) in done or ex.get((pid, f["edge_index"]), 1.0) < SKIN_EXPOSED_MIN:
                 continue
             feats = face_features(part, f)
             bay = float(f["length_m"]) / max(1, int(f["n_bays"]))
@@ -547,7 +612,7 @@ def generate_face(prj, spec: dict, part: dict, face: dict, feats: list, refs: li
     wall = (part.get("material") or {}).get("wall")
     wall_srgb = (mats.get(wall) or {}).get("srgb")
     base = dict(name=spec.get("name", ""), width=info["width_m"], height=info["height_m"],
-                features="\n".join(info["labels"]),
+                features="\n".join(info["labels"]), words=info.get("words") or "as drawn",
                 aspect=f"{lay.width} x {lay.height}, width / height = {lay.width / lay.height:.3f}",
                 materials=f" (the wall material is '{wall}', about RGB {tuple(wall_srgb)})" if wall_srgb else "")
     owner = (f"- The owner reviewed an earlier version and asks: {owner_note.strip()}\n" if owner_note.strip() else "")
@@ -636,8 +701,10 @@ def items_for(prj, spec: dict, parts: dict, refs_for, done: set, notes: list, ge
     items = []
     owner_notes = owner_notes or {}
     special = {(pid, f["edge_index"]): (f, feats) for pid, f, feats in feature_faces(spec, parts, done)}
+    ex = exposed_share(spec)
     for pid, part in parts.items():
-        faces = [f for f in autotex.part_faces(spec, part) if (pid, f["edge_index"]) not in done]
+        faces = [f for f in autotex.part_faces(spec, part) if (pid, f["edge_index"]) not in done
+                 and ex.get((pid, f["edge_index"]), 1.0) >= SKIN_EXPOSED_MIN]
         if not faces:
             continue
         res = generate_part(prj, spec, part, refs_for(pid), generate, owner_notes.get(pid, ""))

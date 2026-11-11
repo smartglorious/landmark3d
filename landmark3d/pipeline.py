@@ -175,6 +175,7 @@ def build_spec(prj: Project) -> dict:
     ai_notes = []
     review_log = []
     photo_views_out = []
+    volumes_out = []
     photos_used = []
     ai_error = None
     quality = None
@@ -215,6 +216,8 @@ def build_spec(prj: Project) -> dict:
             facts=json.dumps({k: v.get("value") for k, v in facts.items()}, ensure_ascii=False),
             notes=json.dumps(notes + [st.get("notes", "")], ensure_ascii=False), satellite_note=sat_note)
         prompt += agent.user_directive(st, notes=False)
+        from . import inventory as inventory_mod
+        inv = {"list": None}          # the volume inventory of the first answer; later answers must keep it
         try:
             def massing_check(obj):
                 errs = spec_mod.validate_massing(obj)
@@ -222,9 +225,13 @@ def build_spec(prj: Project) -> dict:
                     return errs
                 if not obj["parts"]:
                     return ["parts must not be empty"]
-                return (material_errors(obj, int(st["budgets"].get("materials_max", 10)))
+                from . import exposure
+                vol = (inventory_mod.first_errors(obj) if inv["list"] is None
+                       else inventory_mod.coverage_errors(obj["parts"], inv["list"]))
+                return (vol + material_errors(obj, int(st["budgets"].get("materials_max", 10)))
                         + orientation_errors(obj["parts"], main)
-                        + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts))
+                        + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts)
+                        + exposure.feature_issues(obj["parts"], main))     # features on buried walls
 
             massing, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=massing_check,
                                        images=photos + sat_imgs, retries=2, accept_invalid=True, repair=repair_answer)
@@ -232,6 +239,10 @@ def build_spec(prj: Project) -> dict:
                 ai_notes_extra = [f"AI could not fix: {e}" for e in res.validation_errors[:6]]
             else:
                 ai_notes_extra = []
+            ids = {p.get("id") for p in massing.get("parts", [])}
+            inv["list"] = [v for v in massing.get("volumes") or [] if isinstance(v, dict) and v.get("part") in ids]
+            massing["volumes"] = inv["list"]
+            prj.log("volume inventory", {"volumes": len(inv["list"]), "parts": len(massing.get("parts", []))})
             normalise_glass(massing)
             rounds = int(settings_mod.load().get("photo_review_rounds", 2) or 0)
             if rounds > 0 and photos:
@@ -311,6 +322,7 @@ def build_spec(prj: Project) -> dict:
                         break
             ai_parts = massing["parts"]
             photo_views_out = massing.get("views") or []
+            volumes_out = massing.get("volumes") or []
             if ai_parts:
                 # The AI model replaces the OSM parts (it received their outlines and may reuse them); adding both
                 # stacked duplicate volumes on top of each other.
@@ -353,6 +365,7 @@ def build_spec(prj: Project) -> dict:
         "photos": photos_used,                      # "photo n" in views / renders = photos[n-1]
         "views": photo_views_out,
         "observations": observation_log,            # empty unless the facade_observations setting is on
+        "volumes": volumes_out,                     # the volume inventory the AI listed from the photos
     }
     if settings_mod.load().get("facade_observations", False):
         # M3: the observed floor and bay grid, with the person's corrections, feeds the facade of each part.
@@ -636,6 +649,11 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
                             "(right) at the same extent and scale: check positions, plan shapes, sizes and "
                             "orientations of every volume against it."))
         prompt += agent.user_directive(st)
+        if massing.get("volumes"):
+            from . import inventory as inventory_mod
+            prompt += ("\n\nVOLUME INVENTORY (from your first look at the photos; each keeps its own part, same id - you "
+                       "may ADD volumes you now see, listing them in \"volumes\", never drop one): "
+                       + inventory_mod.text(massing["volumes"]))
 
         def review_check(o):
             scores = o.get("scores")
@@ -683,8 +701,15 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
         if new_views and matched and [{k: v[k] for k in keys} for v in new_views] != [{k: m[k] for k in keys}
                                                                                      for m in matched]:
             entry["views_changed"] = True
+        from . import inventory as inventory_mod
+        obj["volumes"] = inventory_mod.merged(massing.get("volumes"), obj)
         massing = obj
         candidates.append(massing)
+    if len(candidates) > 1 and not (log and log[-1].get("verdict") == "match"):
+        # only candidates that pass the checks (the first draft may have been accepted with errors, e.g. a lost
+        # volume) are offered; the select step must not trade volumes for a cleaner silhouette
+        valid = [c for c in candidates if not check(c)]
+        candidates = valid if valid else candidates
     if len(candidates) > 1 and not (log and log[-1].get("verdict") == "match"):
         massing, pick = select_best(prj, provider, candidates, photos, sat, main, base_materials, st, out_root)
         log.append(pick)
@@ -785,7 +810,7 @@ def facade_issues(massing: dict, main, notes: list | None = None) -> list[str]:
     out = []
     for p in massing.get("parts", []):
         fac = p.get("facade") or {}
-        if not fac or fac.get("opening_type") == "curtain_wall" or fac.get("openings") is False \
+        if not fac or fac.get("opening_type") == "curtain_wall" or not geom.has_openings(fac) \
                 or geom.is_tapered(p.get("taper")):
             continue
         try:
@@ -812,8 +837,10 @@ OPENING_ALIASES = {"louver": "rect", "louvre": "rect", "louvers": "rect", "louvr
                    "louvred": "rect", "vent": "rect", "ventilation": "rect", "shutter": "rect", "shutters": "rect",
                    "jalousie": "rect", "grille": "rect", "screen": "rect", "window": "rect", "door": "rect",
                    "rectangular": "rect", "rect": "rect", "square": "square", "arch": "arch", "arched": "arch",
-                   "arcade": "arch", "storefront": "storefront", "shopfront": "storefront", "blank": "none"}
-ALIAS_PRIORITY = ("storefront", "arch", "square", "rect", "none")   # "arched_window" is an arch, not a plain window
+                   "arcade": "arch", "storefront": "storefront", "shopfront": "storefront", "blank": "none",
+                   "lancet": "arch", "oculus": "oculus", "oculi": "oculus", "round": "oculus", "circular": "oculus",
+                   "rose": "oculus", "porthole": "oculus"}
+ALIAS_PRIORITY = ("storefront", "arch", "oculus", "square", "rect", "none")   # "arched_window" is an arch, not a plain window
 
 
 def _opening_alias(rule: dict) -> dict:
@@ -826,11 +853,21 @@ def _opening_alias(rule: dict) -> dict:
     return dict(rule, opening_type=alias) if alias else rule
 
 
+def _glazed_floor(rule: dict) -> dict:
+    """A curtain wall is a whole facade type; for one floor band of a punched facade the AI means a fully glazed
+    floor, which the engine draws as storefront glazing (held-out 2026-11-11: Vietcombank Tower failed on this)."""
+    if rule.get("opening_type") == "curtain_wall":
+        return dict(rule, opening_type="storefront")
+    return rule
+
+
 def _alias_wall(fac: dict) -> None:
+    whole_glass = fac.get("opening_type") == "curtain_wall"
     if isinstance(fac.get("ground"), dict):
-        fac["ground"] = _opening_alias(fac["ground"])
+        fac["ground"] = _glazed_floor(_opening_alias(fac["ground"]))
     if isinstance(fac.get("floors"), list):
-        fac["floors"] = [_opening_alias(r) if isinstance(r, dict) else r for r in fac["floors"]]
+        fac["floors"] = [_glazed_floor(_opening_alias(r)) if isinstance(r, dict) else r for r in fac["floors"]
+                         if not (whole_glass and isinstance(r, dict) and r.get("opening_type") == "curtain_wall")]
 
 
 def _alias_side(side: dict) -> dict:
@@ -898,6 +935,12 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         prompt += ("\n\nREVIEW ROUND. The first attached images compare the photos (left) with the current model "
                    "(right) from the same viewpoints. An independent reviewer found these errors - fix the facade "
                    "ones; keep what already matches:\n- " + "\n- ".join(str(e) for e in feedback))
+    if main:
+        from . import exposure
+        prompt += ("\n\nEXPOSED WALLS (measured: the share of each wall not buried inside another part). Put every "
+                   "facing feature (rose windows, clocks, portals, pediments, loggias, entrances) on an exposed wall "
+                   "of its part; a feature on a wall that is more than half hidden is rejected:\n"
+                   + exposure.exposure_text(massing, main))
     prompt += ("\n\nFacade logic (checked automatically - inconsistent answers are rejected): every facade, or every "
                "segment of one, gets ONE bay "
                "grid (bay_spacing; the length is divided into whole bays, symmetric about its centre). Pilasters "
@@ -916,10 +959,53 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
         mats.update(o.get("materials") or {})
         return sanitize_facades(prune_materials(dict(massing, parts=parts, materials=mats)))
 
+    sheet = None
+    if main:
+        try:
+            sheet = layout_sheet(prj, massing)
+        except Exception as exc:                    # the sheet helps; its failure never stops the pass
+            prj.log("layout sheet failed", {"error": str(exc)[:200]})
+    if sheet is not None:
+        prompt += ("\n\nThe LAST attached image shows the CURRENT facade layout of each part exactly as the model "
+                   "builds it (grey wall, dark openings in their real outline, light bands = pilasters or "
+                   "buttresses, thin lines = floors), a few bays per part. Compare each with the photos: number of "
+                   "window rows, window shape (round / pointed / segmental arch, square), paired lights, round "
+                   "windows, blank bands, buttresses - and correct the facade keys where they differ.")
+    dropped: list = []
+
+    def tool_fix(o):
+        """What the tool corrects itself before checking: opening words, unknown feature types, and features on
+        buried walls or outside their part (dropped and noted, not a reason to reject the whole answer)."""
+        o = repair_answer(o)
+        if not isinstance(o, dict) or not isinstance(o.get("parts"), list):
+            return o
+        known = set(spec_mod.FEATURE_TYPES)
+        parts = []
+        for q in o["parts"]:
+            if isinstance(q, dict) and isinstance(q.get("features"), list):
+                bad = [f for f in q["features"] if not isinstance(f, dict) or f.get("type") not in known]
+                if bad:
+                    dropped.append(f"part {q.get('id')}: dropped {len(bad)} feature(s) of unknown type")
+                q = dict(q, features=[f for f in q["features"] if f not in bad])
+            parts.append(q)
+        o = dict(o, parts=parts)
+        if main:
+            m = merged(o)
+            fixed_parts, notes = exposure_mod.drop_hidden_features(m, main)
+            if notes:
+                dropped.extend(notes)
+                feats = {fp["id"]: fp.get("features") for fp in fixed_parts}
+                o = dict(o, parts=[dict(q, features=feats.get(q.get("id"), q.get("features")))
+                                   if isinstance(q, dict) and "features" in q else q for q in o["parts"]])
+        return o
+    from . import exposure as exposure_mod
     try:
         obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
-                             validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main) if main else []),
-                             images=list(sheets or [])[:4] + photos[:4], retries=2)
+                             validator=lambda o: check(merged(o)) + (facade_issues(merged(o), main)
+                                                                     + _fixable_feature_issues(merged(o), main)
+                                                                     if main else []),
+                             images=list(sheets or [])[:4] + photos[:4] + ([sheet] if sheet else []), retries=2,
+                             repair=tool_fix)
     except Exception as exc:
         entry["result"] = f"facade pass failed, kept the facades: {exc}"[:300]
         return massing, entry
@@ -930,8 +1016,49 @@ def facade_pass(prj: Project, provider, massing: dict, photos: list, check, st: 
     entry.update({"verdict": f"facades refined, {n_feat} detail features", "differences": obj.get("notes", [])[:8]})
     if fixed:
         entry["layout_fixes"] = fixed[:12]
+    if dropped:
+        entry["features_dropped"] = sorted(set(dropped))[:12]
     prj.log("facade pass", {"features": n_feat})
     return out, entry
+
+
+LAYOUT_SHEET_PARTS = 12
+
+
+def layout_sheet(prj: Project, massing: dict):
+    """One labelled image with the facade layout (genfacade.layout: the build's own layout, 2 bays) of each part with
+    a punched facade, largest first. Returns its path, or None when no part has one."""
+    from PIL import Image, ImageDraw
+    from .smarttex import genfacade
+    from .autotex import _font
+    parts = [p for p in massing.get("parts", []) if p.get("enabled", True) is not False and p.get("facade")
+             and (p.get("facade") or {}).get("opening_type") != "curtain_wall" and float(p.get("height", 0)) >= 3]
+    parts.sort(key=lambda p: -float(p["height"]))
+    cells = []
+    for p in parts[:LAYOUT_SHEET_PARTS]:
+        img, _ = genfacade.layout(p, 2)
+        img.thumbnail((360, 300))
+        cells.append((p["id"], img))
+    if not cells:
+        return None
+    cols = 4
+    rows = (len(cells) + cols - 1) // cols
+    W, H = 380, 340
+    sheet = Image.new("RGB", (cols * W, rows * H), "white")
+    d = ImageDraw.Draw(sheet)
+    font = _font(16)
+    for k, (pid, img) in enumerate(cells):
+        x, y = (k % cols) * W, (k // cols) * H
+        d.text((x + 8, y + 6), pid, fill=(0, 0, 0), font=font)
+        sheet.paste(img, (x + 10, y + 30))
+    out = prj.path("reports", "facade_layouts.jpg")
+    sheet.save(out, "JPEG", quality=88)
+    return out
+
+
+def _fixable_feature_issues(massing: dict, main) -> list[str]:
+    from . import exposure
+    return exposure.feature_issues(massing["parts"], main, fixable_only=True)
 
 
 def score_pair(q) -> tuple:
@@ -1057,8 +1184,16 @@ def spec_blocking_issues(prj: Project) -> list[dict]:
 def review_issues(spec: dict) -> list[dict]:
     """Issues shown with the plan at A2 and A3 besides the structure check: unknown materials (blocking) and generated
     components (marked as generated, never observed)."""
-    from . import generative
-    return unknown_material_issues(spec) + generative.review_items(spec)
+    from . import generative, exposure, inventory as inventory_mod
+    lost = [{"severity": "warning", "part": None, "code": "missing_volume", "message": m}
+            for m in inventory_mod.coverage_errors(spec.get("parts", []), spec.get("volumes") or [])]
+    hidden = []
+    try:
+        hidden = [{"severity": "warning", "part": m.split(":")[0].replace("part ", ""), "code": "hidden_feature",
+                   "message": m} for m in exposure.feature_issues(spec, spec["footprint"]["local"])]
+    except (KeyError, TypeError, ValueError):
+        pass
+    return unknown_material_issues(spec) + generative.review_items(spec) + hidden + lost
 
 
 def unknown_material_issues(spec: dict) -> list[dict]:

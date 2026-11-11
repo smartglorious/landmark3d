@@ -14,7 +14,8 @@ def part(pid, rect_w, base, height, level):
 
 def answer():
     return {"parts": [part("hall", 30, 0, 12, 4), part("deck", 8, 12, 0.9, 0.9)],
-            "materials": {k: {"srgb": [1, 2, 3]} for k in ("wall", "roof", "trim")}}
+            "materials": {k: {"srgb": [1, 2, 3]} for k in ("wall", "roof", "trim")},
+            "volumes": [{"name": "hall", "part": "hall"}, {"name": "roof deck", "part": "deck"}]}
 
 
 def test_low_storey_is_invalid_until_repaired():
