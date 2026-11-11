@@ -239,3 +239,13 @@ def test_tiles_repeat_without_a_seam():
     t = np.asarray(gf.tile(Image.fromarray(a), 1, 3, 40)).astype(float)
     w = t.shape[1] // 3
     assert abs(t[:, w - 1, 0].mean() - t[:, w, 0].mean()) < 12               # was about 180
+
+
+def test_frame_lines_drawn_by_the_generator_are_cut():
+    a = np.full((100, 200, 3), 140, np.uint8)
+    a[:, :2] = 252                                   # a white line down the left edge
+    a[-1:, :] = 20                                   # a dark line along the bottom
+    out = np.asarray(gf.trim_border(Image.fromarray(a))).astype(float)
+    assert out.shape == a.shape and abs(out[:, 0].mean() - 140) < 15 and abs(out[-1].mean() - 140) < 15
+    plain = Image.fromarray(np.full((50, 50, 3), 120, np.uint8))
+    assert gf.trim_border(plain) is plain

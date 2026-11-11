@@ -243,6 +243,32 @@ def generate_part(prj, spec: dict, part: dict, refs: list, generate=None,
 EDGE_BLEND = 0.04               # share of the width cross-faded at each side so the image repeats without a seam
 
 
+BORDER_MAX = 0.03               # at most this share of each side is cut as a frame line
+BORDER_STEP = 30.0             # a border line differs this much in mean luminance from the wall next to it
+
+
+def trim_border(img: Image.Image) -> Image.Image:
+    """Cut thin frame lines the generator sometimes draws along the image edges (a white or dark line one or two pixels
+    wide): edge columns and rows whose mean luminance jumps from the wall inside them."""
+    a = np.asarray(img.convert("L")).astype(np.float32)
+    H, W = a.shape
+    cols, rows = a.mean(axis=0), a.mean(axis=1)
+
+    def cut(prof, n, rev):
+        lim = max(1, int(n * BORDER_MAX))
+        p = prof[::-1] if rev else prof
+        ref = float(np.median(p[lim:2 * lim + 4]))
+        k = 0
+        while k < lim and abs(float(p[k]) - ref) > BORDER_STEP:
+            k += 1
+        return k
+    l, r = cut(cols, W, False), cut(cols, W, True)
+    t, b = cut(rows, H, False), cut(rows, H, True)
+    if not (l or r or t or b):
+        return img
+    return img.crop((l, t, W - r, H - b)).resize((W, H), Image.LANCZOS)
+
+
 def x_periodic(img: Image.Image, share: float = EDGE_BLEND) -> Image.Image:
     """Cross-fade the left and right edge bands so the right edge continues into the left one: copies side by side,
     and neighbouring faces of a part (each ends where the next starts), meet without a colour step."""
@@ -261,7 +287,7 @@ def x_periodic(img: Image.Image, share: float = EDGE_BLEND) -> Image.Image:
 def tile(img: Image.Image, n_src: int, n_face: int, h_px: int) -> Image.Image:
     """A face of n_face bays from an n_src-bay image: whole copies side by side, cut at a bay line."""
     bay_w = max(4, round(img.width * h_px / img.height / n_src))
-    src = x_periodic(img.resize((bay_w * n_src, h_px), Image.LANCZOS))
+    src = x_periodic(trim_border(img).resize((bay_w * n_src, h_px), Image.LANCZOS))
     out = Image.new("RGB", (bay_w * n_face, h_px))
     x = 0
     while x < out.width:
@@ -575,7 +601,7 @@ def compose(base: Image.Image | None, seg: Image.Image, face: dict, span, h_px: 
         base = Image.new("RGB", (max(8, int(round(L * h_px / max(1e-6, float(face["z1"]) - float(face["z0"]))))), h_px),
                          _wall_fill(seg))
     else:
-        seg = match_colour(seg, base)       # drawn separately: bring it to the tone of the part's bay elevation
+        seg = match_colour(trim_border(seg), base)   # drawn separately: brought to the tone of the bay elevation
     out = base.copy()
     x0, x1 = int(round(span[0] / L * out.width)), int(round(span[1] / L * out.width))
     if x1 - x0 >= 2:
