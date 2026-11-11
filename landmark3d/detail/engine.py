@@ -14,10 +14,14 @@ class DetailEngineError(RuntimeError):
 
 
 def engine_settings(flag: bool, bake_ao: bool = False, ao_size: int = 256, bake_normal: bool = False,
-                    normal_size: int = 256, normal_ratio: float = 0.6) -> dict:
+                    normal_size: int = 256, normal_ratio: float = 0.6, opening_assemblies: bool | None = None) -> dict:
     """What a build job records about the engine (plan: persist it in the spec/build job). Baking is part of the
     detail engine: it only runs with the flag on."""
+    if opening_assemblies is None:          # M2 window assemblies (frame, sill, recess) give the relief under
+        from .. import settings as settings_mod     # generated facade skins: on by default, apart from the v2 flag
+        opening_assemblies = bool(settings_mod.load().get("opening_assemblies", True))
     return {"detail_engine_v2": bool(flag), "library_version": registry.LIBRARY_VERSION,
+            "opening_assemblies": bool(flag or opening_assemblies),
             "bake_ao": bool(flag and bake_ao), "ao_size": int(ao_size),
             "bake_normal": bool(flag and bake_normal), "normal_size": int(normal_size),
             "normal_ratio": float(normal_ratio)}

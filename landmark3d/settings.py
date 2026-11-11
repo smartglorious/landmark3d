@@ -46,6 +46,7 @@ DEFAULTS = {
     "normal_size": 256,
     "normal_ratio": 0.6,         # kept share of triangles in the shipped copy; 0.3 dropped the trim (measured)
     "facade_observations": False,  # M3: the AI proposes facade observations per photo (calls the AI; off by default)
+    "opening_assemblies": True,  # M2 window assemblies (frame, sill, recess) also with detail_engine_v2 off: relief under generated skins
     "detail_engine_v2": False,   # M1: contracts only; the flag must stay off until a v2 generator is released
     "facade_review_rounds": 2,  # only with facade_gate "judge": extra facade rounds driven by the judge's errors
     "facade_gate": "checks",    # "checks": one facade pass accepted on deterministic checks; "judge": earlier judge-gated rounds

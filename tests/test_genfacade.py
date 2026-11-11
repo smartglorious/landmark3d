@@ -188,3 +188,10 @@ def test_a2_preview_layouts_list_parts_and_feature_faces(prj):
     assert rows[0]["part"] == "wing" and (prj.root / rows[0]["layout"]).is_file()
     assert {f["edge_index"] for f in rows[0]["faces"]} >= {a["edge_index"]}
     assert all((prj.root / f["layout"]).is_file() for f in rows[0]["faces"])
+
+
+def test_opening_assemblies_are_on_by_default_without_the_v2_flag(prj):
+    from landmark3d.detail import engine
+    assert engine.engine_settings(False)["opening_assemblies"] is True
+    assert engine.engine_settings(False, opening_assemblies=False)["opening_assemblies"] is False
+    assert engine.engine_settings(True, opening_assemblies=False)["opening_assemblies"] is True

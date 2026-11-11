@@ -525,8 +525,9 @@ def main():
                                     share // 2, part.get("taper"))
         win_builder = None
         fac = part.get("facade") or {}
-        if (job.get("engine") or {}).get("detail_engine_v2") and fac and fac.get("opening_type") != "curtain_wall" \
-                and not geom.is_tapered(part.get("taper")):
+        eng = job.get("engine") or {}
+        if (eng.get("opening_assemblies") or eng.get("detail_engine_v2")) and fac \
+                and fac.get("opening_type") != "curtain_wall" and not geom.is_tapered(part.get("taper")):
             windows = geom.facade_layout(poly, part["base_z"], part["base_z"] + part["height"], fac)["windows"]
             win_builder, opening_stats[part["id"]] = detail_openings.builder_for(windows, max(0, share - detail))
         openings_total += geom.facade_openings(poly, part["base_z"], part["base_z"] + part["height"],
