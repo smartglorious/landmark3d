@@ -78,6 +78,18 @@ class CallLog:
 _call_log: contextvars.ContextVar = contextvars.ContextVar("l3d_ai_call_log", default=None)
 
 
+def record_call(step: str, seconds: float, outcome: str = "ok", provider: str = "", images: int = 0,
+                errors=()) -> None:
+    """Record an AI call made outside ask_json (e.g. Codex image generation) in the active call log."""
+    log = _call_log.get()
+    if log is None:
+        return
+    log.record({"step": step, "request": log.new_request(), "attempt": 1, "max_attempts": 1, "outcome": outcome,
+                "seconds": round(float(seconds), 1), "check_seconds": 0, "provider": provider, "model": None,
+                "images": int(images), "prompt_chars": 0, "reply_chars": 0,
+                "errors": [str(e)[:200] for e in list(errors)[:8]], "repaired": False})
+
+
 @contextlib.contextmanager
 def logging_calls(log: CallLog):
     """Record every ask_json attempt made inside this block to `log`."""

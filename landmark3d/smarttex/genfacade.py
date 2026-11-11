@@ -74,7 +74,11 @@ def codex_generate(prompt: str, images: list, timeout: int = GEN_TIMEOUT_S) -> P
         cmd += ["-i", str(p)]
     cmd.append("-")
     t0 = time.time()
-    r = ai._run(cmd, stdin_text=prompt, timeout=timeout, cwd=str(td))
+    try:
+        r = ai._run(cmd, stdin_text=prompt, timeout=timeout, cwd=str(td))
+    except Exception as exc:
+        ai.record_call("codex_image", time.time() - t0, "failed", "openai", len(images), [exc])
+        raise
     reply = out.read_text(encoding="utf-8").strip() if out.exists() else ""
     cands = []
     for line in reply.splitlines():
@@ -85,6 +89,7 @@ def codex_generate(prompt: str, images: list, timeout: int = GEN_TIMEOUT_S) -> P
     if gen_root.is_dir():
         cands += sorted((p for p in gen_root.rglob("*.png") if p not in before and p.stat().st_mtime >= t0 - 5),
                         key=lambda p: p.stat().st_mtime)
+    ai.record_call("codex_image", time.time() - t0, "ok" if cands else "no_image", "openai", len(images))
     if not cands:
         tail = (r.stderr or r.stdout or "").strip().splitlines()[-4:]
         raise RuntimeError(f"Codex produced no image (exit {r.returncode}): {' | '.join(tail)[:300]}")

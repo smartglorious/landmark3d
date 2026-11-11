@@ -154,6 +154,7 @@ def project(pid: str):
         "renders": renders,
         "has_glb": (prj.root / "output" / "model.glb").exists() and st["phases"]["build"]["status"] == "done",
         "photo_exact": bool(settings_mod.load().get("photo_exact", False)),
+        "texture_result": (prj.read_json("reports/autotex/notes.json", {}) or {}).get("result"),
         "events": prj.events(60),
     }
 

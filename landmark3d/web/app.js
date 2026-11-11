@@ -739,6 +739,9 @@ function buildPanel(id, d) {
   return `<p>${b.ok ? '<span class="okc">Đạt</span>' : '<span class="err">Không đạt</span>'} · ${b.triangles} tam giác · ${b.bytes} byte ·
     ${b.materials} vật liệu · nén ${esc(b.compression)} · ${b.openings} ô cửa · ${b.panels ?? 0} mặt dán ảnh ·
     texture lặp: ${esc((b.textured_materials || []).join(', ') || 'không')} · render ${esc(b.render_engine)}</p>
+    ${d.texture_result ? `<p class="muted">Texture: ${d.texture_result.generated_faces ?? 0} mặt ảnh tạo bởi AI (Codex, không phải ảnh chụp) ·
+      ${(d.texture_result.generated_tiles || []).length} mẫu vật liệu AI · ${(d.texture_result.bay_faces ?? 0) + (d.texture_result.unique_faces ?? 0)} mặt cắt từ ảnh</p>
+      ${(d.texture_result.generation_failed || []).map(f => `<p class="err">Tạo ảnh lỗi: ${esc(f.part)} (${esc(f.why)})</p>`).join('')}` : ''}
     ${(b.errors || []).map(e => `<p class="err">${esc(e)}</p>`).join('')}${(b.warnings || []).map(e => `<p class="muted">${esc(e)}</p>`).join('')}
     ${b.accounting ? `<p class="muted">Tam giác theo loại: ${Object.entries(b.accounting.by_category).map(([k, v]) => `${esc(k)} ${esc(String(v))}`).join(' · ')}${b.accounting.target_utilization != null ? ` · ${Math.round(b.accounting.target_utilization * 100)}% mục tiêu` : ''}</p>` : ''}
     ${b.articulation && (b.articulation.placed || []).length ? `<p class="muted">Chi tiết kiến trúc đã đặt: ${esc(b.articulation.placed.join(', '))}</p>` : ''}

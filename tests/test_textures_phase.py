@@ -195,3 +195,22 @@ def test_curtain_wall_glass_gets_a_generated_mullion_module(prj, codex):
     assert f"exactly {cols} glass panels across" in prompt and (cols, rows) == (4, 2) and size == 6.0
     sw = {t["material"]: t for t in textures.load(prj)["textures"] if t.get("mode") == "repeat"}
     assert sw["glass"]["world_size_m"] == 6.0 and sw["glass"]["licence"] == "ai_generated"
+
+
+def test_codex_image_calls_are_counted_in_ai_usage(tmp_path, monkeypatch):
+    """P11: a real Codex image call (CLI faked) is recorded in the phase's AI call log."""
+    import subprocess
+    from landmark3d.research import ai
+    from landmark3d.smarttex import genfacade
+    monkeypatch.setattr(genfacade, "codex_cli", lambda: "codex")
+    monkeypatch.setattr(genfacade.Path, "home", staticmethod(lambda: tmp_path))
+
+    def fake_run(cmd, stdin_text=None, timeout=60, cwd=None):
+        Image.new("RGB", (8, 8)).save(f"{cwd}/out.png")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(ai, "_run", fake_run)
+    log = ai.CallLog(tmp_path / "calls.jsonl", "textures")
+    with ai.logging_calls(log):
+        assert genfacade.codex_generate("draw", []).is_file()
+    s = log.summary()
+    assert s["by_step"]["codex_image"]["calls"] == 1 and s["by_step"]["codex_image"]["rejected"] == 0

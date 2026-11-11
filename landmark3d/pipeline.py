@@ -1104,6 +1104,15 @@ def release(prj: Project) -> dict:
              "", "## Approvals"] + [f"- {a['phase']}: {a['decision']} {a.get('notes', '')}" for a in st.get("approvals", [])]
     if attributions:
         notes += ["", "## Texture attributions"] + attributions
+    gen = [t for t in textures_mod.load(prj)["textures"] if t.get("licence") == "ai_generated"]
+    if gen:
+        tex_res = (prj.read_json("reports/autotex/notes.json", {}) or {}).get("result", {})
+        notes += ["", "## Generated content (AI-drawn, not photographs)",
+                  f"- {sum(1 for t in gen if t['mode'] == 'panel')} facade textures on "
+                  f"{len({t.get('part') for t in gen if t['mode'] == 'panel'})} parts and "
+                  f"{sum(1 for t in gen if t['mode'] == 'repeat')} material tiles were drawn by Codex image "
+                  f"generation in the style of the licensed reference photos, reviewed at A2.5.",
+                  *[f"- generation failed for {f['part']}: {f['why']}" for f in tex_res.get("generation_failed", [])]]
     refs = [s for s in srcs.values() if s.get("kind") == "satellite" or s.get("use") == "reference_only"]
     if refs:
         notes += ["", "## Reference imagery (not used as texture)"] + [
