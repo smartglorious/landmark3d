@@ -804,8 +804,12 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
     tex_dir.mkdir(parents=True, exist_ok=True)
     for old in tex_dir.glob("auto_*.jpg"):
         old.unlink()
-    imgs = [match_wall_colour(im, wall_colour(spec, it["face"]["part"]))
-            for it, im in zip(items, harmonise([it["img"] for it in items]))]
+    # photo crops are evened out (exposure, wall colour); generated faces are already one consistent drawing per part,
+    # and per-face corrections would put colour steps at the corners between them
+    photo = [k for k, it in enumerate(items) if it["kind"] != "generated"]
+    fixed = dict(zip(photo, harmonise([items[k]["img"] for k in photo]))) if photo else {}
+    imgs = [match_wall_colour(fixed[k], wall_colour(spec, it["face"]["part"])) if k in fixed else it["img"]
+            for k, it in enumerate(items)]
     entries, rejected = [], []
     for k, (it, img) in enumerate(zip(items, imgs), start=1):
         f, src = it["face"], it["src"]
@@ -1021,7 +1025,7 @@ def _material_tiles(prj: Project, spec: dict, photos, notes: list) -> dict:
 def _all_faces(spec: dict) -> set:
     out = set()
     for p in spec["parts"]:
-        if p.get("enabled", True) is False or float(p["height"]) < 3 or _steep_taper(p):
+        if p.get("enabled", True) is False or float(p["height"]) < 3 or _steep_taper(p)                 or (p.get("facade") or {}).get("opening_type") == "curtain_wall":   # glass: a material tile (P9)
             continue
         try:
             out |= {(p["id"], f["edge_index"]) for f in part_faces(spec, p)}
@@ -1037,7 +1041,7 @@ def run_v2(prj: Project, provider) -> dict:
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = texture_key(prj, spec) + "-v18"
+    h = texture_key(prj, spec) + "-v23"
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
     from .smarttex import bake, quads
@@ -1067,7 +1071,7 @@ def run_v2(prj: Project, provider) -> dict:
             n_auto = len(crops)
             crops = qa_v2(prj, provider, crops)
     items = crops + projected + generated
-    quads.match_part_colours(items)
+    quads.match_part_colours([it for it in items if it["kind"] != "generated"])
     tiles = _material_tiles(prj, spec, photos, notes)
     res = apply_v2(prj, spec, items, obj, photos, h, tiles)
     res["generated_tiles"] = sorted(tiles)

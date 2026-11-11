@@ -249,3 +249,19 @@ def test_frame_lines_drawn_by_the_generator_are_cut():
     assert out.shape == a.shape and abs(out[:, 0].mean() - 140) < 15 and abs(out[-1].mean() - 140) < 15
     plain = Image.fromarray(np.full((50, 50, 3), 120, np.uint8))
     assert gf.trim_border(plain) is plain
+
+
+def test_a_face_cut_inside_a_copy_still_ends_like_the_image():
+    a = np.zeros((40, 120, 3), np.uint8)
+    a[:, :, 1] = np.linspace(40, 220, 120)[None, :].astype(np.uint8)
+    img = Image.fromarray(a)
+    two = np.asarray(gf.tile(img, 3, 2, 40)).astype(float)                # 2 bays from a 3-bay image
+    one = np.asarray(gf.tile(img, 3, 3, 40)).astype(float)
+    assert abs(two[:, -2:, 1].mean() - one[:, -2:, 1].mean()) < 6
+    assert abs(two[:, -2:, 1].mean() - two[:, :2, 1].mean()) < 12
+
+
+def test_a_blank_wall_is_not_failed_for_missing_window_rhythm():
+    blank = dict(PART, facade=dict(PART["facade"], openings=False))
+    lay, info = gf.layout(blank, 3)
+    assert info["openings"] == [] and gf.check(painted(lay), info, [220, 190, 110]) == []

@@ -115,7 +115,12 @@ def test_generation_first_no_crop_ai_when_every_face_is_generated(prj, codex):
 
 def test_bare_faces_are_reported_and_the_crop_fallback_needs_an_ai(prj, codex):
     from landmark3d import autotex
-    res = autotex.run_v2(prj, None)                          # the glass part cannot be generated, no AI for crops
+    res = autotex.run_v2(prj, None)
+    assert res["bare_faces"] == 0                            # curtain-wall glass is covered by its material tile
+    spec = prj.read_json("spec/landmark_spec.json")
+    spec["parts"][1].pop("facade")                           # a part without a facade grid cannot be generated
+    prj.write_json("spec/landmark_spec.json", spec)
+    res = autotex.run_v2(prj, None)                          # ... and there is no AI for photo crops
     assert res["generated_faces"] == 4 and res["bare_faces"] == 4 and not res["crop_fallback"]
     assert "4 faces without image texture" in autotex.summary_line(res)
 

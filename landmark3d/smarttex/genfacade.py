@@ -157,7 +157,9 @@ def check(img: Image.Image, info: dict, wall_srgb=None) -> list[str]:
     if metrics.sky_share(a) > metrics.THRESHOLDS["sky_share_max"]:
         probs.append("there is sky at the top: the image must end at the top of the wall")
     n = info["n_bays"]
-    if n >= 2:
+    if not info.get("openings"):             # a blank wall (no openings in the layout): nothing to align
+        pass
+    elif n >= 2:
         bp = metrics.bay_phase(a, n)
         if bp.get("error") is None:
             probs.append(f"the windows do not repeat {n} times across the width")
@@ -240,7 +242,7 @@ def generate_part(prj, spec: dict, part: dict, refs: list, generate=None,
             "accepted": not problems}
 
 
-EDGE_BLEND = 0.04               # share of the width cross-faded at each side so the image repeats without a seam
+EDGE_BLEND = 0.10               # share of the width cross-faded at each side so the image repeats without a seam
 
 
 BORDER_MAX = 0.03               # at most this share of each side is cut as a frame line
@@ -277,7 +279,7 @@ def x_periodic(img: Image.Image, share: float = EDGE_BLEND) -> Image.Image:
     n = max(1, int(W * share))
     out = a.copy()
     for i in range(n):
-        w = 0.5 * (1.0 - i / n)
+        w = 0.5 if i < n / 2 else 0.5 * (1.0 - (i - n / 2) / (n / 2))   # equal mix at the edge, then fade out
         L, R = a[:, i], a[:, W - 1 - i]
         out[:, i] = (1 - w) * L + w * R
         out[:, W - 1 - i] = (1 - w) * R + w * L
@@ -293,6 +295,14 @@ def tile(img: Image.Image, n_src: int, n_face: int, h_px: int) -> Image.Image:
     while x < out.width:
         out.paste(src, (x, 0))
         x += src.width
+    if n_face % n_src:               # cut inside a copy: the last stretch fades into the image's own right edge, which
+        o = np.asarray(out).astype(np.float32)          # matches its left edge (x_periodic), where the next face starts
+        sr = np.asarray(src).astype(np.float32)
+        n = min(max(1, int(src.width * EDGE_BLEND)), o.shape[1])
+        for i in range(n):
+            w = 1.0 if i < n / 2 else 1.0 - (i - n / 2) / (n / 2)
+            o[:, -1 - i] = w * sr[:, -1 - i] + (1 - w) * o[:, -1 - i]
+        out = Image.fromarray(o.clip(0, 255).astype(np.uint8))
     return out
 
 
@@ -597,6 +607,7 @@ def match_colour(img: Image.Image, ref: Image.Image) -> Image.Image:
 def compose(base: Image.Image | None, seg: Image.Image, face: dict, span, h_px: int) -> Image.Image:
     """The face texture: the bay elevation (or the plain wall colour) with the feature span pasted at its place."""
     L = float(face["length_m"])
+    plain = base is None
     if base is None:
         base = Image.new("RGB", (max(8, int(round(L * h_px / max(1e-6, float(face["z1"]) - float(face["z0"]))))), h_px),
                          _wall_fill(seg))
@@ -606,6 +617,14 @@ def compose(base: Image.Image | None, seg: Image.Image, face: dict, span, h_px: 
     x0, x1 = int(round(span[0] / L * out.width)), int(round(span[1] / L * out.width))
     if x1 - x0 >= 2:
         out.paste(seg.resize((x1 - x0, out.height), Image.LANCZOS), (x0, 0))
+    if not plain:                    # the face's ends fade into the bay elevation, where the neighbouring faces end too
+        o, bse = np.asarray(out).astype(np.float32), np.asarray(base).astype(np.float32)
+        n = max(1, int(out.width * EDGE_BLEND))
+        for i in range(min(n, out.width // 2)):
+            w = 1.0 - i / n
+            o[:, i] = w * bse[:, i] + (1 - w) * o[:, i]
+            o[:, -1 - i] = w * bse[:, -1 - i] + (1 - w) * o[:, -1 - i]
+        out = Image.fromarray(o.clip(0, 255).astype(np.uint8))
     return out
 
 
