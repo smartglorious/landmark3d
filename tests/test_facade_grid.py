@@ -120,5 +120,5 @@ def test_opening_words_without_geometry_become_engine_types():
                        ("curtain_wall", "curtain_wall"), ("none", "none")):
         one = dict(hall, facade={"opening_type": word})
         assert pipeline.sanitize_facades({"parts": [one]})["parts"][0]["facade"]["opening_type"] == want
-    made_up = dict(hall, facade={"opening_type": "porthole"})
-    assert pipeline.sanitize_facades({"parts": [made_up]})["parts"][0]["facade"]["opening_type"] == "porthole"  # the AI is asked again
+    made_up = dict(hall, facade={"opening_type": "zigzag"})
+    assert pipeline.sanitize_facades({"parts": [made_up]})["parts"][0]["facade"]["opening_type"] == "zigzag"  # the AI is asked again

@@ -85,12 +85,17 @@ Each part:
           "overhang": m (eaves projecting past the walls), "upturn": m (eave corners curling up),
           "skirts": [{{"depth": m, "rise": m, "gap": m, "overhang": m}}, ...] (lower roof tiers, bottom first)}},
  "facade": {{
-   "opening_type": "rect|arch|square|storefront|none|curtain_wall", "level_height": m, "bay_spacing": m,
+   "opening_type": "rect|arch|square|oculus|storefront|none|curtain_wall", "level_height": m, "bay_spacing": m,
    "opening_width": m, "opening_height": m, "pediment": true|false,
+   "arch_shape": "round|pointed|segmental" (arch heads: semicircular, Gothic pointed, or shallow),
+   "lights": 1-3 (coupled windows: n narrow lights side by side in each bay), "oculus": m (a round window of this
+   diameter above each window, in the wall before the next floor),
    "floors": [{{"from": 0, "to": 0, "opening_type": "...", "bay_spacing": m, "opening_width": m,
-               "opening_height": m, "pediment": true|false, "awning": true|false}}, ...]   (floor 0 = ground),
+               "opening_height": m, "pediment": true|false, "awning": true|false, "arch_shape", "lights",
+               "oculus", "openings": false (a blank floor: no windows)}}, ...]   (floor 0 = ground),
    "entrance": {{"width": m, "height": m, "facing_deg": deg}}   (a large arched portal, e.g. a main entrance),
-   "pilasters": {{"every": n_bays, "width": m, "depth": m}},     (flat columns between bays)
+   "pilasters": {{"every": n_bays, "width": m, "depth": m, "style": "pilaster|buttress"}},   (flat columns, or
+                buttresses: deep stepped piers, between bays)
    "cornice": m (0 = none), "bands": true|false}},
  "material": {{"wall": "<material>", "roof": "<material>", "trim": "<material>", "accent": "<material>"}}}}
 materials: {{"<name>": {{"srgb": [r,g,b], "roughness": 0..1, "metallic": 0..1}}}} - sRGB 0-255 sampled from the photos.
@@ -103,6 +108,9 @@ Modelling guidance:
 - Classical / masonry: describe EVERY floor in facade.floors (e.g. ground arched shop windows, floor 1 square
   windows, floor 2 arched windows, floor 3 rectangular windows with pediments), the central entrance portal,
   pilasters between bays, cornice on top, parapet as a balustrade. Count the bays in the photo for bay_spacing.
+- Count the window ROWS of each wall in the photos: a wall with one row of windows and a blank band above gets
+  "openings": false on the blank floors, not a window on every floor. Say whether arches are round, pointed or
+  segmental (arch_shape), whether windows are paired (lights: 2) and whether round windows (oculus) sit above them.
 - A podium is usually a separate rectangular volume along the street, not the whole site outline.
 - Tapering towers (spires, bud / bullet shapes, pyramids of glass): ONE part with "taper" instead of a stack of
   ever smaller boxes; a slanted top is roof "shed". Several tapered parts may be stacked (top outline of one =
@@ -171,8 +179,13 @@ footprints, heights, positions or roofs):
 The attached photos show the real building. Your only task is the FACADES and the visible DETAILS of each part,
 so the model reads like the photos up close. For every part, return its complete "facade" and "features":
 - facade: opening_type, level_height, bay_spacing (count the bays in the photos), opening sizes, "floors"
-  (one entry per floor band that differs: ground, piano nobile, attic ...), "entrance" (main portal), "pilasters",
-  "cornice", "bands"; glass parts keep "curtain_wall" (mullion spacing, band per floor).
+  (one entry per floor band that differs: ground, piano nobile, attic ...; "openings": false for a blank floor),
+  "entrance" (main portal), "pilasters" (with "style": "buttress" for deep stepped piers), "cornice", "bands";
+  glass parts keep "curtain_wall" (mullion spacing, band per floor).
+  Window shape, per facade or floor: "arch_shape": "round" | "pointed" | "segmental" (look at the heads: round
+  Romanesque or classical arches are NOT pointed Gothic ones); "lights": 2 or 3 for coupled windows; "oculus":
+  diameter of a round window above each window; opening_type "oculus" for a row of round windows only.
+  Count the window ROWS per wall in the photos: put windows only on the floors that have them.
 - features (relative to the part; z = height of the centre above the part's base; facing_deg = direction the
   facade faces, 0 = east, 90 = north; offset = metres along that facade from its middle):
   {{"type": "disc", "facing_deg", "z", "diameter", "offset", "material"}}   clock faces, rose windows, oculi

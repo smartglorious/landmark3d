@@ -17,19 +17,24 @@ OSM_ROOF = {"flat": "flat", "gabled": "gable", "hipped": "hip", "pyramidal": "py
             "onion": "dome", "skillion": "shed", "half-hipped": "hip", "mansard": "mansard", "gambrel": "gambrel",
             "round": "dome", "saltbox": "gable", "cone": "pyramid"}
 
-OPENING_TYPES = ["rect", "arch", "square", "storefront", "none"]
+OPENING_TYPES = ["rect", "arch", "square", "oculus", "storefront", "none"]
+WINDOW_SHAPE = {"arch_shape": {"enum": ["round", "pointed", "segmental"]},
+                "lights": {"type": "integer", "minimum": 1, "maximum": 4},
+                "oculus": {"type": "number", "minimum": 0, "maximum": 4},
+                "openings": {"type": "boolean"}}
 FLOOR_RULE = {
     "type": "object", "required": ["from"],
     "properties": {
         "from": {"type": "integer", "minimum": 0}, "to": {"type": "integer", "minimum": 0},
         "opening_type": {"enum": OPENING_TYPES}, "bay_spacing": {"type": "number", "exclusiveMinimum": 1},
         "opening_width": {"type": "number"}, "opening_height": {"type": "number"}, "sill": {"type": "number"},
-        "pediment": {"type": "boolean"}, "awning": {"type": "boolean"}, "awning_depth": {"type": "number"}},
+        "pediment": {"type": "boolean"}, "awning": {"type": "boolean"}, "awning_depth": {"type": "number"},
+        **WINDOW_SHAPE},
 }
 
 _PILASTERS = {"oneOf": [{"type": "boolean"}, {"type": "object", "properties": {
     "every": {"type": "integer", "minimum": 1}, "width": {"type": "number", "exclusiveMinimum": 0},
-    "depth": {"type": "number", "exclusiveMinimum": 0}}}]}
+    "depth": {"type": "number", "exclusiveMinimum": 0}, "style": {"enum": ["pilaster", "buttress"]}}}]}
 _GROUND = {"type": "object", "properties": {
     "opening_type": {"enum": ["storefront", "rect", "arch"]},
     "bay_spacing": {"type": "number", "exclusiveMinimum": 1},
@@ -39,7 +44,7 @@ _WALL_FACADE = {     # what one wall (facade "sides") or stretch of wall ("segme
     "opening_type": {"enum": OPENING_TYPES}, "bay_spacing": {"type": "number", "exclusiveMinimum": 0.5},
     "opening_width": {"type": "number"}, "opening_height": {"type": "number"}, "sill": {"type": "number", "minimum": 0},
     "pediment": {"type": "boolean"}, "awning": {"type": "boolean"}, "pilasters": _PILASTERS,
-    "floors": {"type": "array", "items": FLOOR_RULE}, "ground": _GROUND}
+    "floors": {"type": "array", "items": FLOOR_RULE}, "ground": _GROUND, **WINDOW_SHAPE}
 _FACADE_SIDE = {"type": "object", "required": ["facing_deg"], "properties": {
     **_WALL_FACADE, "facing_deg": {"type": "number"},
     "segments": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["length"], "properties": {
@@ -125,7 +130,9 @@ PART_SCHEMA = {
                 "facing_deg": {"type": "number"}}},
             "pilasters": {"oneOf": [{"type": "boolean"}, {"type": "object", "properties": {
                 "every": {"type": "integer", "minimum": 1}, "width": {"type": "number", "exclusiveMinimum": 0},
-                "depth": {"type": "number", "exclusiveMinimum": 0}}}]},
+                "depth": {"type": "number", "exclusiveMinimum": 0},
+                "style": {"enum": ["pilaster", "buttress"]}}}]},
+            **WINDOW_SHAPE,
             "opening_height": {"type": "number"}, "level_height": {"type": "number", "exclusiveMinimum": 1.5},
             "cornice": {"type": "number", "minimum": 0, "maximum": 4},
             "bands": {"type": "boolean"},

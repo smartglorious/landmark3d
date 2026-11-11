@@ -788,15 +788,65 @@ def build_hip(poly, eave_z, height, mesh: Mesh, pitch_deg=None, lift=None):
 
 
 # ----------------------------------------------------------------------------- facade openings
-def arch_outline(width, height, segments=8):
-    spring = max(0.0, height - width / 2)
-    r = width / 2
-    pts = [(-r, 0.0), (-r, spring)]
-    for i in range(1, segments):
-        a = math.pi - math.pi * i / segments
-        pts.append((r * math.cos(a), spring + r * math.sin(a)))
-    pts += [(r, spring), (r, 0.0)]
+ARCH_SHAPES = ("round", "pointed", "segmental")
+POINTED_R = 0.8               # radius of each arc of a pointed arch, as a share of the width (equilateral = 1.0)
+SEGMENTAL_RISE = 0.2          # rise of a segmental arch, as a share of the width
+
+
+def arch_rise(width, shape="round") -> float:
+    """Height of an arch head above its springing line."""
+    if shape == "pointed":
+        r = POINTED_R * width
+        c = r - width / 2
+        return math.sqrt(max(0.0, r * r - c * c))
+    if shape == "segmental":
+        return SEGMENTAL_RISE * width
+    return width / 2
+
+
+def arch_outline(width, height, segments=8, shape="round"):
+    """Outline (x, z) of an arched opening, bottom left first: jambs up to the springing line, then a round
+    (semicircle), pointed (two arcs meeting at an apex) or segmental (a flat arc) head."""
+    w2 = width / 2
+    rise = min(arch_rise(width, shape), height)
+    spring = max(0.0, height - rise)
+    pts = [(-w2, 0.0), (-w2, spring)]
+    if shape == "pointed":
+        r = POINTED_R * width
+        c = r - w2                                   # the left arc's centre sits at (+c, spring), the right at (-c)
+        top = math.acos(max(-1.0, min(1.0, -c / r)))
+        half = max(2, segments // 2)
+        left = [(c + r * math.cos(math.pi - (math.pi - top) * i / half),
+                 spring + r * math.sin(math.pi - (math.pi - top) * i / half)) for i in range(1, half + 1)]
+        pts += left + [(-x, z) for x, z in reversed(left[:-1])]
+    elif shape == "segmental":
+        r = (w2 * w2 + rise * rise) / (2 * rise) if rise > 1e-6 else 1e6
+        cz = spring + rise - r
+        a0, a1 = math.atan2(spring - cz, -w2), math.atan2(spring - cz, w2)
+        pts += [(r * math.cos(a0 + (a1 - a0) * i / segments), cz + r * math.sin(a0 + (a1 - a0) * i / segments))
+                for i in range(1, segments)]
+    else:
+        pts += [(w2 * math.cos(math.pi - math.pi * i / segments), spring + w2 * math.sin(math.pi - math.pi * i / segments))
+                for i in range(1, segments)]
+    pts += [(w2, spring), (w2, 0.0)]
     return pts
+
+
+def circle_outline(diameter, segments=16):
+    """Outline (x, z) of a round opening (oculus) of this diameter, its lowest point at z = 0."""
+    r = diameter / 2
+    return [(r * math.sin(2 * math.pi * i / segments), r - r * math.cos(2 * math.pi * i / segments))
+            for i in range(segments)]
+
+
+def opening_outline(win, segments=8):
+    """The outline of a layout window: rect / square / storefront, arch (with its arch_shape) or oculus."""
+    w, h = float(win["w"]), float(win["h"])
+    if win.get("kind") == "oculus":
+        return circle_outline(w, max(12, 2 * segments))
+    if win.get("kind") == "arch":
+        return arch_outline(w, h, segments, win.get("shape", "round"))
+    return [(-w / 2, 0.0), (w / 2, 0.0), (w / 2, h), (-w / 2, h)]
 
 
 def _slots(edges, per, bay, w):
@@ -878,7 +928,7 @@ def facade_openings(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int, t
             made += 1
             continue
         p, t, out, w, h, z0 = win["p"], win["t"], win["o"], win["w"], win["h"], win["z0"]
-        shape = arch_outline(w, h) if win["kind"] == "arch" else [(-w / 2, 0), (w / 2, 0), (w / 2, h), (-w / 2, h)]
+        shape = opening_outline(win)
         cx, cy = p[0] + out[0] * 0.05, p[1] + out[1] * 0.05
         mesh.f([mesh.v(cx + t[0] * x, cy + t[1] * x, z0 + z) for x, z in shape], "opening")
         tris += len(shape) - 2
@@ -950,7 +1000,9 @@ def facade_runs(poly, max_turn_deg: float = RUN_TURN_DEG):
 
 
 SIDE_KEYS = ("opening_type", "bay_spacing", "opening_width", "opening_height", "sill", "pediment", "awning",
-             "awning_depth", "pilasters", "floors", "ground", "level_height")     # what one wall or wall segment may set for itself
+             "awning_depth", "pilasters", "floors", "ground", "level_height", "arch_shape", "lights", "oculus")
+LIGHT_GAP_MIN = 0.12          # stone mullion between the lights of a coupled window (m)
+OCULUS_MARGIN = 0.15          # clear space around an oculus above a window (m)     # what one wall or wall segment may set for itself
 
 
 def _slice_run(run, s0, s1):
@@ -1030,7 +1082,7 @@ def facade_layout(poly, base_z, top_z, facade):
         bay = max(1.0, float(fac.get("bay_spacing", 4.0)))
         pl = fac.get("pilasters")
         pl = (pl if isinstance(pl, dict) else {}) if pl else None
-        pil_w = float(pl.get("width", 0.7)) if pl else 0.0
+        pil_w = float(pl.get("width", 0.9 if pl.get("style") == "buttress" else 0.7)) if pl else 0.0
         pil_every = max(1, int(pl.get("every", 1))) if pl else 1
         rules = [dict(r) for r in (fac.get("floors") or [])]
         if fac.get("ground") and not any(int(r.get("from", 0)) <= 0 <= int(r.get("to", r.get("from", 0))) for r in rules):
@@ -1075,9 +1127,14 @@ def facade_layout(poly, base_z, top_z, facade):
         for lv in range(lv_n):
             rule = next((r for r in rules if int(r.get("from", 0)) <= lv <= int(r.get("to", r.get("from", 0)))), None)
             kind = (rule or {}).get("opening_type") or fac.get("opening_type", "rect")
-            if kind == "none":
+            if kind == "none" or (rule or {}).get("openings") is False:
                 continue
             src = rule if rule and rule.get("opening_type") else fac
+            pick = lambda k, d=None: (rule or {}).get(k, src.get(k, fac.get(k, d)))
+            shape = str(pick("arch_shape", "round"))
+            shape = shape if shape in ARCH_SHAPES else "round"
+            lights = max(1, min(4, int(pick("lights", 1) or 1)))
+            oculus_d = float(pick("oculus", 0) or 0)
             every =max(1, int(round(float(src.get("bay_spacing", bay)) / bay))) if src.get("bay_spacing") else 1
             if kind == "storefront":
                 w = float(src.get("opening_width", b * 0.8))
@@ -1087,7 +1144,7 @@ def facade_layout(poly, base_z, top_z, facade):
                 w = float(src.get("opening_width", b * 0.45))
                 h = float(src.get("opening_height", w if kind == "square" else min(2.4, lh * 0.62)))
                 sill = float(src.get("sill", 0.15 if lv == 0 else 0.9))
-            if kind == "square":
+            if kind in ("square", "oculus"):
                 h = w
             if w > clear:
                 out["issues"].append(f"floor {lv}: opening width {w:g} m > clear bay {clear:.2f} m - narrowed")
@@ -1114,10 +1171,34 @@ def facade_layout(poly, base_z, top_z, facade):
                 _, d1, _ = _point_at(run["edges"], min(run["L"], s_ + w / 2))
                 if d0[0] * d1[0] + d0[1] * d1[1] < 0.9:
                     continue
-                out["windows"].append({"run": ri, "s": s_, "w": w, "h": h, "z0": z0, "kind": kind, "lv": lv,
-                                       "p": p_, "t": t_, "o": o_, "pediment": pediment, "awning": awning,
-                                       "awning_depth": float(src.get("awning_depth", 1.0)),
-                                       "frame_half": min(w / 2 + 0.25, (b - pil_w) / 2 - 0.05)})
+                base = {"run": ri, "h": h, "z0": z0, "kind": kind, "lv": lv, "shape": shape, "t": t_, "o": o_,
+                        "pediment": pediment, "awning": awning, "awning_depth": float(src.get("awning_depth", 1.0))}
+                if lights > 1 and kind not in ("storefront", "oculus"):
+                    # a coupled window: n lights side by side under one opening width, stone mullions between
+                    gap = max(LIGHT_GAP_MIN, 0.08 * w)
+                    lw = (w - (lights - 1) * gap) / lights
+                    if lw >= 0.3:
+                        for j in range(lights):
+                            sj = s_ - w / 2 + lw / 2 + j * (lw + gap)
+                            pj, _, _ = _point_at(run["edges"], sj)
+                            out["windows"].append(dict(base, s=sj, w=lw, p=pj, light=j, lights=lights,
+                                                       frame_half=lw / 2 + gap / 2 - 1e-3,
+                                                       pediment=False, awning=False))
+                    else:
+                        out["issues"].append(f"floor {lv}: {lights} lights do not fit in {w:.2f} m - one light")
+                        lights = 1
+                if lights == 1 or kind in ("storefront", "oculus"):
+                    out["windows"].append(dict(base, s=s_, w=w, p=p_,
+                                               frame_half=min(w / 2 + 0.25, (b - pil_w) / 2 - 0.05)))
+                if oculus_d > 0 and kind != "oculus":
+                    # a round window above the window, centred in the wall between its head and the next floor
+                    room = ceiling - (z0 + h + head)
+                    if room >= oculus_d + 2 * OCULUS_MARGIN and oculus_d <= clear:
+                        out["windows"].append(dict(base, s=s_, w=oculus_d, h=oculus_d, p=p_, kind="oculus",
+                                                   z0=z0 + h + head + (room - oculus_d) / 2, pediment=False,
+                                                   awning=False, frame_half=oculus_d / 2 + 0.1))
+                    elif i == 0:
+                        out["issues"].append(f"floor {lv}: no room for a {oculus_d:g} m oculus above the windows")
     seen = set()                                       # two segments meeting at a line share its pilaster
     unique = []
     for p_ in out["pilasters"]:
@@ -1158,7 +1239,7 @@ def pilasters(poly, base_z, top_z, facade, mesh: Mesh, budget_left: int):
     if not facade.get("pilasters"):
         return 0
     pl = facade["pilasters"] if isinstance(facade["pilasters"], dict) else {}
-    dep = float(pl.get("depth", 0.22))
+    dep = float(pl.get("depth", 0.6 if pl.get("style") == "buttress" else 0.22))   # buttresses stand out further
     cor = float(facade.get("cornice", 0) or 0)
     lay = facade_layout(poly, base_z, top_z + cor, facade)      # top_z here is already below the cornice
     used = 0

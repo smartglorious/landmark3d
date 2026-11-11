@@ -814,8 +814,10 @@ OPENING_ALIASES = {"louver": "rect", "louvre": "rect", "louvers": "rect", "louvr
                    "louvred": "rect", "vent": "rect", "ventilation": "rect", "shutter": "rect", "shutters": "rect",
                    "jalousie": "rect", "grille": "rect", "screen": "rect", "window": "rect", "door": "rect",
                    "rectangular": "rect", "rect": "rect", "square": "square", "arch": "arch", "arched": "arch",
-                   "arcade": "arch", "storefront": "storefront", "shopfront": "storefront", "blank": "none"}
-ALIAS_PRIORITY = ("storefront", "arch", "square", "rect", "none")   # "arched_window" is an arch, not a plain window
+                   "arcade": "arch", "storefront": "storefront", "shopfront": "storefront", "blank": "none",
+                   "lancet": "arch", "oculus": "oculus", "oculi": "oculus", "round": "oculus", "circular": "oculus",
+                   "rose": "oculus", "porthole": "oculus"}
+ALIAS_PRIORITY = ("storefront", "arch", "oculus", "square", "rect", "none")   # "arched_window" is an arch, not a plain window
 
 
 def _opening_alias(rule: dict) -> dict:
