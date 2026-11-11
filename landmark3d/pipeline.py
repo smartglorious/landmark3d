@@ -15,7 +15,8 @@ from .project import PHASES, Project
 from .research import agent, ai
 
 # Which phase a change request on an approval sends the project back to.
-REWIND = {"sources_review": "research", "spec_review": "spec", "build_review": "spec", "release_review": "build"}
+REWIND = {"sources_review": "research", "spec_review": "spec", "texture_review": "textures", "build_review": "spec",
+          "release_review": "build"}
 
 COLOR_NAMES = {"red": (170, 50, 40), "dark red": (120, 30, 25), "brown": (120, 80, 50), "yellow": (232, 196, 104),
                "cream": (236, 226, 196), "white": (238, 236, 230), "grey": (150, 150, 150), "gray": (150, 150, 150),
@@ -1144,15 +1145,17 @@ def _run_phase(prj: Project, phase: str) -> str:
                                          f"openings; {len(sp['defaults_used'])} defaults used"
                                          + (f"; {len(errs)} STRUCTURE ERROR(S): fix in A2 (edit spec or request changes)"
                                             if errs else ""))
+        elif phase == "textures":
+            # Generated elevations first (Codex), photo crops only for faces still bare (needs the vision AI).
+            # Reviewed at A2.5; the build itself makes no AI call.
+            if not settings_mod.load().get("auto_textures", True):
+                prj.set_phase(phase, "done", "automatic textures are off in settings")
+            else:
+                from . import autotex
+                res = autotex.run_v2(prj, ai.get("vision"))
+                prj.set_phase(phase, "done", autotex.summary_line(res))
         elif phase == "build":
             prj.path("reports", "build_manifest.json").unlink(missing_ok=True)   # a new build replaces the old manifest
-            if settings_mod.load().get("auto_textures", True):
-                provider = ai.get("vision")           # without AI, faces covered by solved cameras are still projected
-                try:
-                    from . import autotex
-                    autotex.run_v2(prj, provider)
-                except Exception as exc:              # textures are an enhancement: never block the build
-                    prj.log("auto textures failed", {"error": str(exc)[:300]})
             res = engine_runner.build(prj)
             if res.get("ok"):
                 prj.set_phase(phase, "done", f"{res['triangles']} triangles, {res['bytes']} bytes, "

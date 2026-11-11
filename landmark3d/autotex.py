@@ -336,8 +336,10 @@ def texture_key(prj: Project, spec: dict) -> str:
             row["sha256"] = hashlib.sha256(f.read_bytes()).hexdigest()
         rows.append(row)
     cams = prj.root / "input" / "cameras.json"            # solved or hand-placed cameras change projected faces
+    ov = prj.root / "input" / "texture_overrides.json"   # A2.5 per-part choices (colour, notes to the generator)
     key = json.dumps({"spec": spec_hash(spec), "sources": rows,
-                      "cameras": hashlib.sha256(cams.read_bytes()).hexdigest() if cams.is_file() else None},
+                      "cameras": hashlib.sha256(cams.read_bytes()).hexdigest() if cams.is_file() else None,
+                      "overrides": hashlib.sha256(ov.read_bytes()).hexdigest() if ov.is_file() else None},
                      sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
@@ -911,68 +913,192 @@ def _swatches_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, 
     return entries
 
 
-def _generated_items(prj: Project, spec: dict, obj: dict, photos, items: list, notes: list) -> list:
+OVERRIDES = "input/texture_overrides.json"      # A2.5 owner choices per part: {"parts": {id: {"mode", "note"}}}
+
+
+def load_overrides(prj: Project) -> dict:
+    return (prj.read_json(OVERRIDES, {}) or {}).get("parts", {})
+
+
+def set_override(prj: Project, part_id: str, mode: str, note: str = "") -> dict:
+    """A2.5 per-part decision. mode: "generate" (default), "regenerate" (drop the cached image and draw again, with an
+    optional note to the generator), "colour" (no image texture on this part)."""
+    if mode not in ("generate", "regenerate", "colour"):
+        raise ValueError("mode must be generate, regenerate or colour")
+    spec = prj.read_json("spec/landmark_spec.json") or {}
+    if part_id not in {p["id"] for p in spec.get("parts", [])}:
+        raise ValueError(f"unknown part {part_id}")
+    data = prj.read_json(OVERRIDES, {}) or {}
+    parts = data.setdefault("parts", {})
+    if mode == "regenerate":
+        from .smarttex import genfacade
+        genfacade.forget(prj, part_id)
+        prev = parts.get(part_id) or {}
+        parts[part_id] = {"mode": "generate", "note": note.strip() or prev.get("note", ""),
+                          "round": int(prev.get("round", 0)) + 1}
+    elif mode == "colour":
+        parts[part_id] = {"mode": "colour"}
+    else:
+        parts.pop(part_id, None)
+    prj.write_json(OVERRIDES, data)
+    prj.log("texture choice", {"part": part_id, "mode": mode, **({"note": note} if note else {})})
+    return parts.get(part_id, {"mode": "generate"})
+
+
+def part_refs(spec: dict, photos) -> dict:
+    """{part id: photo paths, best first}: photos where the part's walls face the camera (from viewpoint matching),
+    then the rest. No AI."""
+    order = {pth: k for k, pth in enumerate(spec.get("photos") or [], start=1)}
+    views = [dict(v, photo=k) for k, (pth, _) in enumerate(photos, start=1) for v in spec.get("views") or []
+             if order.get(pth) == v.get("photo")]
+    out = {}
+    for p in spec["parts"]:
+        if p.get("enabled", True) is False:
+            continue
+        try:
+            faces = part_faces(spec, p)
+        except Exception:
+            faces = []
+        score = {k: 0.0 for k in range(1, len(photos) + 1)}
+        for v in views:
+            try:
+                n, az = int(v["photo"]), float(v["azimuth_deg"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            for f in faces:
+                rel = abs(_ang(f["facing_deg"] - az))
+                if rel <= VISIBLE_DEG:
+                    score[n] = score.get(n, 0.0) + math.cos(math.radians(rel)) * f["length_m"]
+        ranked = sorted(score, key=lambda k: -score[k])
+        out[p["id"]] = [photos[k - 1][0] for k in ranked]
+    return out
+
+
+def generatable_parts(spec: dict) -> dict:
+    return {p["id"]: p for p in spec["parts"] if p.get("enabled", True) is not False and p.get("facade")
+            and not geom.is_tapered(p.get("taper")) and (p.get("facade") or {}).get("opening_type") != "curtain_wall"
+            and float(p["height"]) >= 3}
+
+
+def _generated_items(prj: Project, spec: dict, photos, done: set, notes: list, overrides: dict) -> list:
     from . import settings as settings_mod
     from .smarttex import genfacade
     if not settings_mod.load().get("generated_textures", True) or not genfacade.codex_cli() or not photos:
         return []
-    keep = {(it["face"]["part"], it["face"]["edge_index"]) for it in items if it["kind"] in ("projected", "unique")}
-    parts = {p["id"]: p for p in spec["parts"] if p.get("enabled", True) is not False and p.get("facade")
-             and not geom.is_tapered(p.get("taper")) and (p.get("facade") or {}).get("opening_type") != "curtain_wall"
-             and float(p["height"]) >= 3}
-    chosen = {q["id"]: q for q in (obj or {}).get("parts", [])}
+    parts = {pid: p for pid, p in generatable_parts(spec).items()
+             if (overrides.get(pid) or {}).get("mode") != "colour"}
+    refs = part_refs(spec, photos)
+    owner = {pid: (o.get("note") or "") for pid, o in overrides.items() if o.get("note")}
+    return genfacade.items_for(prj, spec, parts, lambda pid: refs.get(pid) or [p for p, _ in photos], done, notes,
+                               owner_notes=owner)
 
-    def refs_for(pid):
-        out = []
-        q = chosen.get(pid) or {}
-        for key in ("bay", None):
-            n = (q.get("bay") or {}).get("photo") if key == "bay" else q.get("face_photo")
-            if n and 1 <= int(n) <= len(photos):
-                out.append(photos[int(n) - 1][0])
-        out += [p for p, _ in photos]
-        return list(dict.fromkeys(out))
-    return genfacade.items_for(prj, spec, parts, refs_for, keep, notes)
+
+def _all_faces(spec: dict) -> set:
+    out = set()
+    for p in spec["parts"]:
+        if p.get("enabled", True) is False or float(p["height"]) < 3 or geom.is_tapered(p.get("taper")):
+            continue
+        try:
+            out |= {(p["id"], f["edge_index"]) for f in part_faces(spec, p)}
+        except Exception:
+            continue
+    return out
 
 
 def run_v2(prj: Project, provider) -> dict:
+    """The texture step (phase "textures"). Generation first: projected faces (solved cameras, photo-exact mode),
+    then a generated elevation for every generatable part, then - only for faces still bare and only with an AI -
+    the AI photo-crop plan as the fallback. Parts the owner set to colour get no image texture."""
     spec = prj.read_json("spec/landmark_spec.json")
     if not spec:
         return {"skipped": "no spec"}
-    h = texture_key(prj, spec) + "-v13"
+    h = texture_key(prj, spec) + "-v14"
     if prj.read_json("input/textures.json", {}).get("auto_for") == h:
         return {"skipped": "up to date"}
     from .smarttex import bake, quads
-    if provider is None:                     # no AI: only faces covered by solved cameras can be textured
-        obj, photos, ctx = {"parts": [], "swatches": []}, _texture_photos(prj, spec), {"parts": {}, "faces": {}}
-        if not photos:
-            return {"skipped": "no photo whose licence allows texture use"}
-    else:
-        obj, photos, ctx = plan_v2(prj, provider, spec)
-        if obj is None:
-            return {"skipped": "no photo whose licence allows texture use"}
+    photos = _texture_photos(prj, spec)
+    if not photos:
+        return {"skipped": "no photo whose licence allows texture use"}
+    overrides = load_overrides(prj)
+    colour = {pid for pid, o in overrides.items() if o.get("mode") == "colour"}
     notes: list = []
-    items = build_v2(prj, spec, obj, photos, ctx, notes)
-    n_before = len(items)
-    items = auto_qa_v2(items, notes)
-    n_auto = len(items)
-    items = qa_v2(prj, provider, items) if provider is not None else items
-    n_qa = len(items)
-    # T5: faces that solved photo cameras cover are textured by projection, which replaces the AI crops there
     projected = bake.project_items(prj, spec, notes, provider)
+    projected = [it for it in projected if it["face"]["part"] not in colour]
     done = {(it["face"]["part"], it["face"]["edge_index"]) for it in projected}
-    items = [it for it in items if (it["face"]["part"], it["face"]["edge_index"]) not in done] + projected
-    # Generated facades (Codex image generation): every remaining face that is not a projected or a unique photo
-    # face gets a clean elevation in the building's style with windows on the model's grid; it replaces bay crops
-    generated = _generated_items(prj, spec, obj, photos, items, notes)
-    gdone = {(it["face"]["part"], it["face"]["edge_index"]) for it in generated}
-    items = [it for it in items if (it["face"]["part"], it["face"]["edge_index"]) not in gdone] + generated
+    generated = _generated_items(prj, spec, photos, done, notes, overrides)
+    done |= {(it["face"]["part"], it["face"]["edge_index"]) for it in generated}
+    bare = {f for f in _all_faces(spec) if f not in done and f[0] not in colour}
+    obj, crops, n_before, n_auto = {"parts": [], "swatches": []}, [], 0, 0
+    if bare and provider is not None:            # fallback: photo crops (AI plan + AI check) for the bare faces only
+        got, photos2, ctx = plan_v2(prj, provider, spec)
+        if got is not None:
+            obj = got
+            crops = build_v2(prj, spec, obj, photos2, ctx, notes)
+            crops = [it for it in crops if (it["face"]["part"], it["face"]["edge_index"]) in bare]
+            n_before = len(crops)
+            crops = auto_qa_v2(crops, notes)
+            n_auto = len(crops)
+            crops = qa_v2(prj, provider, crops)
+    items = crops + projected + generated
     quads.match_part_colours(items)
     res = apply_v2(prj, spec, items, obj, photos, h)
     res["dropped_by_auto_qa"] = n_before - n_auto
-    res["dropped_by_qa"] = n_auto - n_qa
+    res["dropped_by_qa"] = n_auto - len(crops)
     res["projected_faces"] = len(projected)
+    res["crop_fallback"] = bool(bare and provider is not None)
+    res["bare_faces"] = len(bare - {(it["face"]["part"], it["face"]["edge_index"]) for it in crops})
+    res["colour_parts"] = sorted(colour)
+    res["generation_failed"] = [{"part": n["generated"], "why": n.get("error") or "; ".join(n.get("problems") or [])}
+                                for n in notes if n.get("generated") and (n.get("error") or not n.get("accepted"))]
     res["crops_snapped"] = sum(1 for n in notes if n.get("edges_snapped"))
     res["crops_too_oblique"] = sum(1 for n in notes if "dropped" in n)
     prj.write_json("reports/autotex/notes.json", {"notes": notes, "result": res})
     prj.log("auto textures", res)
     return res
+
+
+def review(prj: Project) -> dict:
+    """A2.5 Texture review: per part, how it is textured, the generated elevation and its layout, the problems, the
+    reference photos used, and the owner's choice."""
+    spec = prj.read_json("spec/landmark_spec.json") or {"parts": []}
+    data = prj.read_json("reports/autotex/notes.json", {}) or {}
+    texs = textures_mod.load(prj)["textures"]
+    overrides = load_overrides(prj)
+    gen_dir = prj.root / "reports" / "genfacade"
+    photos = _texture_photos(prj, spec) if spec.get("parts") else []
+    refs = part_refs(spec, photos) if photos else {}
+    gen_ok = generatable_parts(spec) if spec.get("parts") else {}
+
+    def rel(name):
+        return f"reports/genfacade/{name}" if (gen_dir / name).is_file() else None
+    rows = []
+    for p in spec["parts"]:
+        if p.get("enabled", True) is False:
+            continue
+        pid = p["id"]
+        mine = [t for t in texs if t.get("auto") and t.get("part") == pid and t.get("mode") == "panel"]
+        meta_p = gen_dir / f"{pid}.json"
+        meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.is_file() else {}
+        note = next((n for n in data.get("notes", []) if n.get("generated") == pid), {})
+        rows.append({"part": pid, "height_m": float(p["height"]), "faces": len(mine),
+                     "kinds": sorted({t.get("kind") or "photo" for t in mine}),
+                     "choice": overrides.get(pid, {"mode": "generate"}),
+                     "generated": rel(f"{pid}.png"), "layout": rel(f"{pid}_layout.png"),
+                     "accepted": meta.get("accepted"), "problems": meta.get("problems") or note.get("problems") or [],
+                     "error": note.get("error"), "attempts": meta.get("attempts"),
+                     "references": (refs.get(pid) or [])[:2], "generatable": pid in gen_ok})
+    swatches = [{"material": t.get("material"), "file": t.get("file"), "from": t.get("from"),
+                 "licence": t.get("licence")} for t in texs if t.get("auto") and t.get("mode") == "repeat"]
+    return {"parts": rows, "swatches": swatches, "result": data.get("result", {})}
+
+
+def summary_line(res: dict) -> str:
+    if res.get("skipped"):
+        return f"textures: {res['skipped']}"
+    bits = [f"{res.get('generated_faces', 0)} generated faces", f"{res.get('projected_faces', 0)} projected",
+            f"{res.get('bay_faces', 0) + res.get('unique_faces', 0)} photo crops", f"{res.get('swatches', 0)} swatches"]
+    if res.get("generation_failed"):
+        bits.append("GENERATION FAILED for " + ", ".join(f["part"] for f in res["generation_failed"]))
+    if res.get("bare_faces"):
+        bits.append(f"{res['bare_faces']} faces without image texture")
+    return "; ".join(bits)

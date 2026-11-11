@@ -330,6 +330,7 @@ const canReopen = (d, p, i) => p.approval && !d.running && d.state.phases[d.phas
 const REOPEN_HELP = {
   sources_review: 'Bạn xem và chỉnh lại nguồn, ảnh. Khi duyệt lại A1, bước dựng khối sẽ chạy lại bằng AI và tạo model mới.',
   spec_review: 'Giữ nguyên kế hoạch khối hiện tại để bạn xem và sửa. Khi duyệt lại A2, tool build lại model từ kế hoạch đó, không dựng lại khối.',
+  texture_review: 'Giữ nguyên các texture hiện có để bạn xem lại, vẽ lại từng khối hoặc chuyển khối sang màu trơn.',
   build_review: 'Giữ nguyên model hiện tại để bạn xem, đổi texture rồi build lại, hoặc yêu cầu sửa.',
   release_review: 'Giữ nguyên các file phát hành để bạn xem lại trước khi duyệt.',
 };
@@ -563,6 +564,8 @@ function renderApproval(stage, id, cur, d) {
       <h3>Mặt đứng: chọn cạnh, sửa lưới, gán ảnh</h3><div id="facade-review"><p class="muted">Đang tải…</p></div>
       <details><summary>Sửa spec (JSON)</summary><textarea id="spec-json" rows="18">${esc(JSON.stringify(sp, null, 2))}</textarea>
       <button id="spec-save">Lưu spec</button> <span id="spec-msg"></span></details>`;
+  } else if (cur.id === 'texture_review') {
+    body = `<div id="tex-review"><p class="muted">Đang tải…</p></div>`;
   } else {
     body = buildPanel(id, d);
   }
@@ -579,7 +582,56 @@ function renderApproval(stage, id, cur, d) {
   };
   bindApproval(id, cur.id);
   if (cur.id === 'spec_review') loadFacadeReview(id);
+  if (cur.id === 'texture_review') loadTextureReview(id);
 }
+
+// A2.5: texture review. Per part: the generated elevation next to the model layout it had to follow and the reference
+// photos it took its style from; the owner keeps it, has it drawn again (with a note), or uses plain colour.
+const KIND_VI = { generated: 'ảnh tạo (Codex)', projected: 'chiếu từ ảnh', bays: 'cắt ảnh (ô lặp)', unique: 'cắt ảnh (mặt riêng)' };
+
+async function loadTextureReview(id) {
+  const el = document.getElementById('tex-review');
+  if (!el) return;
+  let r;
+  try { r = await api('GET', `/api/projects/${id}/texture_review`); }
+  catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const res = r.result || {};
+  const img = (path, title) => path ? `<figure class="txr-fig"><a href="/files/${id}/${esc(path)}?t=${Date.now()}" target="_blank">
+      <img src="/files/${id}/${esc(path)}?t=${Date.now()}"></a><figcaption>${esc(title)}</figcaption></figure>` : '';
+  const rows = r.parts.map(p => {
+    const mode = p.choice?.mode || 'generate';
+    const how = mode === 'colour' ? '<span class="muted">màu trơn (bạn chọn)</span>'
+      : p.kinds.length ? p.kinds.map(k => KIND_VI[k] || k).join(', ') : '<span class="err">chưa có texture ảnh</span>';
+    const prob = p.error ? `<p class="err">Lỗi tạo ảnh: ${esc(p.error)}</p>`
+      : (p.problems || []).length ? `<p class="err">Kiểm tra tự động chưa đạt: ${p.problems.map(esc).join('; ')}</p>` : '';
+    return `<div class="card txr-part"><h3>${esc(p.part)} <span class="muted">· cao ${p.height_m} m · ${p.faces} mặt · ${how}</span></h3>
+      ${prob}${p.choice?.note ? `<p class="muted">Ghi chú lần vẽ trước: ${esc(p.choice.note)}</p>` : ''}
+      <div class="row txr-imgs">${img(p.generated, 'Ảnh tạo')}${img(p.layout, 'Bố cục từ model')}${(p.references || []).map((x, i) => img(x, 'Ảnh thật ' + (i + 1))).join('')}</div>
+      ${p.generatable ? `<div class="row"><input data-note="${esc(p.part)}" placeholder="Ghi chú cho lần vẽ lại (vd. cửa sổ màu xanh lá, có phào chỉ trắng)" style="flex:1">
+        <button data-regen="${esc(p.part)}">Vẽ lại</button>
+        ${mode === 'colour' ? `<button data-gen="${esc(p.part)}">Dùng lại ảnh tạo</button>` : `<button data-colour="${esc(p.part)}">Dùng màu trơn</button>`}</div>`
+        : `<p class="muted">Khối này không vẽ bằng Codex (tường kính, khối vát hoặc không có lưới mặt đứng).</p>`}
+    </div>`;
+  }).join('');
+  const sw = (r.swatches || []).map(s => img(s.file, `${s.material} (${s.from || s.licence || ''})`)).join('');
+  el.innerHTML = `<p>${res.generated_faces ?? 0} mặt dùng ảnh tạo · ${res.projected_faces ?? 0} mặt chiếu từ ảnh ·
+      ${(res.bay_faces ?? 0) + (res.unique_faces ?? 0)} mặt cắt từ ảnh · ${res.swatches ?? 0} mẫu vật liệu</p>
+    ${(res.generation_failed || []).length ? `<p class="err">Tạo ảnh lỗi ở: ${res.generation_failed.map(f => esc(f.part) + ' (' + esc(f.why) + ')').join('; ')}</p>` : ''}
+    <p class="muted">Ảnh tạo là nội dung do AI vẽ theo phong cách ảnh thật, không phải ảnh chụp; được ghi rõ trong ghi chú phát hành.
+      Duyệt A2.5 để build (build không gọi AI). "Vẽ lại" chỉ vẽ lại khối đó, các khối khác lấy từ bộ nhớ đệm.</p>
+    ${rows}${sw ? `<h3>Mẫu vật liệu (mái, tường trơn)</h3><div class="row txr-imgs">${sw}</div>` : ''}
+    <p id="txr-msg" class="muted"></p>`;
+  const send = async (part, mode) => {
+    const note = el.querySelector(`[data-note="${CSS.escape(part)}"]`)?.value.trim() || '';
+    document.getElementById('txr-msg').textContent = 'Đang chạy lại bước texture…';
+    try { await api('POST', `/api/projects/${id}/texture_review/${encodeURIComponent(part)}`, { mode, note }); viewProject(id); }
+    catch (e) { document.getElementById('txr-msg').textContent = e.message; }
+  };
+  el.querySelectorAll('[data-regen]').forEach(b => b.onclick = () => send(b.dataset.regen, 'regenerate'));
+  el.querySelectorAll('[data-colour]').forEach(b => b.onclick = () => send(b.dataset.colour, 'colour'));
+  el.querySelectorAll('[data-gen]').forEach(b => b.onclick = () => send(b.dataset.gen, 'generate'));
+}
+
 
 // A2: facade step. Each photo is put on one wall (part + outline side); each photographed wall gets its own floor and
 // bay grid, from the AI or from the lines typed here. The server validates everything and redoes the grids.

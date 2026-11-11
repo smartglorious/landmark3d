@@ -179,7 +179,8 @@ def _key(*parts) -> str:
     return h.hexdigest()[:20]
 
 
-def generate_part(prj, spec: dict, part: dict, refs: list, generate=codex_generate) -> dict:
+def generate_part(prj, spec: dict, part: dict, refs: list, generate=None,
+                  owner_note: str = "") -> dict:
     """Generated elevation of the part (cached). Returns {"img": PIL image n bays wide, "n_bays", "problems",
     "cached", "attempts"} or {"error": ...}."""
     fac = part.get("facade") or {}
@@ -203,7 +204,8 @@ def generate_part(prj, spec: dict, part: dict, refs: list, generate=codex_genera
     base_prompt = dict(name=spec.get("name", ""), part=part["id"], bays=n, floors=info["floors"],
                        aspect=f"{lay.width} x {lay.height}, width / height = {lay.width / lay.height:.3f}",
                        materials=mat_note)
-    key = _key(json.dumps(base_prompt, sort_keys=True), lay_path.read_bytes(),
+    owner = (f"- The owner reviewed an earlier version and asks: {owner_note.strip()}\n" if owner_note.strip() else "")
+    key = _key(owner, json.dumps(base_prompt, sort_keys=True), lay_path.read_bytes(),
                *[p.read_bytes() for p in ref_paths if p.is_file()])
     meta_path = out_dir / f"{part['id']}.json"
     img_path = out_dir / f"{part['id']}.png"
@@ -214,9 +216,9 @@ def generate_part(prj, spec: dict, part: dict, refs: list, generate=codex_genera
     feedback, problems, img, attempts = "", [], None, 0
     for attempt in range(2):
         attempts += 1
-        prompt = PROMPT.format(**base_prompt, feedback=feedback)
+        prompt = PROMPT.format(**base_prompt, feedback=owner + feedback)
         try:
-            got = generate(prompt, [p for p in ref_paths if p.is_file()] + [lay_path])
+            got = (generate or codex_generate)(prompt, [p for p in ref_paths if p.is_file()] + [lay_path])
         except Exception as exc:
             return {"error": f"generation failed: {str(exc)[:200]}", "attempts": attempts}
         cand = Image.open(got).convert("RGB").resize((lay.width, lay.height), Image.LANCZOS)
@@ -245,7 +247,15 @@ def tile(img: Image.Image, n_src: int, n_face: int, h_px: int) -> Image.Image:
     return out
 
 
-def items_for(prj, spec: dict, parts: dict, refs_for, done: set, notes: list, generate=codex_generate) -> list:
+def forget(prj, part_id: str) -> None:
+    """Drop the cached elevation of a part, so the next texture run draws it again."""
+    d = prj.root / "reports" / "genfacade"
+    for name in (f"{part_id}.png", f"{part_id}.json"):
+        (d / name).unlink(missing_ok=True)
+
+
+def items_for(prj, spec: dict, parts: dict, refs_for, done: set, notes: list, generate=None,
+              owner_notes: dict | None = None) -> list:
     """autotex items of generated textures for the faces not in `done` (projected or unique photo faces)."""
     from .. import autotex
     items = []
@@ -253,7 +263,7 @@ def items_for(prj, spec: dict, parts: dict, refs_for, done: set, notes: list, ge
         faces = [f for f in autotex.part_faces(spec, part) if (pid, f["edge_index"]) not in done]
         if not faces:
             continue
-        res = generate_part(prj, spec, part, refs_for(pid), generate)
+        res = generate_part(prj, spec, part, refs_for(pid), generate, (owner_notes or {}).get(pid, ""))
         note = {"generated": pid, **{k: res.get(k) for k in ("problems", "attempts", "cached", "accepted", "error")}}
         notes.append(note)
         if res.get("error") or not res.get("accepted"):

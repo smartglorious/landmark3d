@@ -73,3 +73,9 @@ pre.log { max-height:220px; overflow:auto; background:#0b0d33; color:#cfe2ff; pa
 .cam-man { fill:#ff2bd6; stroke:#fff; stroke-width:2; cursor:grab; }
 .cam-man.on { fill:#ffe600; }
 .cam-txt { fill:#fff; paint-order:stroke; stroke:#000; stroke-width:3px; font-weight:700; pointer-events:none; }
+
+/* A2.5 texture review */
+.txr-imgs { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+.txr-fig { margin: 0; max-width: 300px; }
+.txr-fig img { max-width: 300px; max-height: 220px; border: 1px solid var(--line); border-radius: 4px; display: block; }
+.txr-fig figcaption { font-size: 12px; color: var(--muted, #777); }

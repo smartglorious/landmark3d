@@ -136,7 +136,7 @@ def test_api_create_and_get(home):
     r = c.post("/api/projects", json={"name": "Api Hall", "location": "X", "lat": 1.0, "lon": 2.0})
     pid = r.json()["id"]
     d = c.get(f"/api/projects/{pid}").json()
-    assert d["state"]["name"] == "Api Hall" and len(d["phases"]) == 11
+    assert d["state"]["name"] == "Api Hall" and len(d["phases"]) == 13
     assert c.get("/").status_code == 200
     s = c.get("/api/settings").json()
     assert "claude" in s["providers"] and "openai" in s["providers"]

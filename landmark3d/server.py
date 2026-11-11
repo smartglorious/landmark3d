@@ -435,6 +435,31 @@ def delete_texture(pid: str, tid: str):
     return {"ok": True}
 
 
+@app.get("/api/projects/{pid}/texture_review")
+def texture_review(pid: str):
+    """A2.5: per part, the generated elevation, its layout, problems, references and the owner's choice."""
+    from . import autotex
+    return autotex.review(_prj(pid))
+
+
+@app.post("/api/projects/{pid}/texture_review/{part}")
+def texture_choice(pid: str, part: str, body: dict = Body(...)):
+    """A2.5 per-part decision: {"mode": "regenerate" | "colour" | "generate", "note": "..."}. The texture step runs
+    again (only the changed part is drawn again; the others come from the cache) and stops at A2.5."""
+    from . import autotex
+    prj = _prj(pid)
+    _refuse_if_running(pid)
+    if prj.state()["phases"]["spec_review"]["status"] != "approved":
+        raise HTTPException(409, "approve the plan (A2) first")
+    try:
+        choice = autotex.set_override(prj, part, _text(body, "mode"), _text(body, "note"))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    pipeline.invalidate_from(prj, "textures", f"texture choice for {part}: {choice.get('mode')}")
+    run(pid)
+    return {"ok": True, "choice": choice}
+
+
 @app.post("/api/projects/{pid}/rebuild")
 def rebuild(pid: str):
     """Re-run the build (and the phases after it) with the current spec and textures."""

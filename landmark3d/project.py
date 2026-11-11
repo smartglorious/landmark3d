@@ -55,7 +55,9 @@ PHASES = [
     {"id": "completion", "title": "Input gate (missing data from the user)", "approval": False},
     {"id": "spec", "title": "Massing spec (parts, heights, roofs, facades, materials)", "approval": False},
     {"id": "spec_review", "title": "A2 - Plan and massing", "approval": True},
-    {"id": "build", "title": "Blender build, export, QA, renders", "approval": False},
+    {"id": "textures", "title": "Facade textures (generated elevations, photo fallback, swatches)", "approval": False},
+    {"id": "texture_review", "title": "A2.5 - Texture review", "approval": True},
+    {"id": "build","title": "Blender build, export, QA, renders", "approval": False},
     {"id": "build_review", "title": "A3 - Model review", "approval": True},
     {"id": "release", "title": "Release files (report, checksums)", "approval": False},
     {"id": "release_review", "title": "A6 - Release approval", "approval": True},
@@ -65,6 +67,19 @@ PHASE_IDS = [p["id"] for p in PHASES]
 # status: pending | running | done | failed | blocked (needs user data) | waiting_approval | approved | changes_requested
 
 _locks: dict[str, threading.RLock] = {}
+
+
+def _with_all_phases(st: dict) -> dict:
+    """Projects made before a phase existed get it: already passed (done / approved) when a later phase has run,
+    else pending. Example: "textures" and "texture_review" (A2.5) were added between A2 and the build."""
+    ph = st.setdefault("phases", {})
+    for k, p in enumerate(PHASES):
+        if p["id"] in ph:
+            continue
+        later = any(ph.get(q["id"], {}).get("status", "pending") != "pending" for q in PHASES[k + 1:])
+        ph[p["id"]] = {"status": ("approved" if p["approval"] else "done") if later else "pending", "updated": None,
+                       "message": "added by an update of the tool" if later else ""}
+    return st
 
 
 def slugify(name: str) -> str:
@@ -134,11 +149,11 @@ class Project:
         with self.lock():
             for attempt in range(20):
                 try:
-                    return json.loads(self.state_file.read_text(encoding="utf-8"))
+                    return _with_all_phases(json.loads(self.state_file.read_text(encoding="utf-8")))
                 except (PermissionError, json.JSONDecodeError):
                     # Windows: the file can be briefly locked while another process replaces it
                     time.sleep(0.05 * (attempt + 1))
-            return json.loads(self.state_file.read_text(encoding="utf-8"))
+            return _with_all_phases(json.loads(self.state_file.read_text(encoding="utf-8")))
 
     def save_state(self, state: dict) -> None:
         with self.lock():
