@@ -84,3 +84,31 @@ def test_generated_texture_layout_is_the_build_layout():
     assert gen0[0]["w"] == pytest.approx(real0[0]["w"]) and len(gen0) == 6          # 3 bays x 2 lights
     img, info = gf.layout(part, 3)
     assert "ROUND-arched" in info["words"] and "oculi" in info["words"]
+
+
+# ------------------------------------------------------------------ shape vocabulary: ngon apse, spire, gables
+def test_ngon_apse_is_a_half_polygon_closed_by_its_chord():
+    poly = geom.footprint_polygon({"ngon": {"cx": 0, "cy": 0, "r": 6, "n": 8, "arc_deg": 180, "rot_deg": 0}}, [])
+    assert len(poly) == 5 and all(x >= -1e-6 for x, _ in poly)          # 4 sides of an octagon + the chord
+    full = geom.footprint_polygon({"ngon": {"cx": 0, "cy": 0, "r": 6, "n": 8}}, [])
+    assert len(full) == 8 and geom.area(full) == pytest.approx(2 * 2 ** 0.5 * 36, rel=1e-3)
+
+
+def test_spire_has_an_apex_broaches_pinnacles_and_lucarnes():
+    sq = geom.rect_polygon(0, 0, 8, 8)
+    m = geom.Mesh()
+    geom.build_part(sq, 0.0, 30.0, {"type": "spire", "height": 20.0}, m)
+    zs = [v[2] for v in m.verts]
+    assert max(zs) == pytest.approx(50.0)
+    plain = geom.Mesh()
+    geom.build_part(sq, 0.0, 30.0, {"type": "spire", "height": 20.0, "pinnacles": False, "lucarnes": False}, plain)
+    assert len(m.faces) > len(plain.faces) + 20                           # 4 pinnacles + 4 lucarnes
+
+
+def test_gables_stand_one_per_bay_on_the_wall_top():
+    wall = geom.rect_polygon(0, 0, 24, 8)
+    m = geom.Mesh()
+    used = geom.features(wall, 0.0, 6.0, None, [{"type": "gables", "facing_deg": 270, "spacing": 4, "height": 2.5}],
+                         m)
+    assert used == 5 * 5                                                   # 5 gables (24 m / 4 m, ends kept clear)
+    assert max(v[2] for v in m.verts) == pytest.approx(8.5)

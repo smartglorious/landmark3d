@@ -75,6 +75,8 @@ Each part:
    | {{"rounded_rect": {{"cx","cy","w","d","rot_deg","r"}}}}      (r = corner radius in m)
    | {{"stadium": {{"cx","cy","w","d","rot_deg"}}}}               (both short ends fully rounded)
    | {{"circle": {{"cx","cy","r"}}}}
+   | {{"ngon": {{"cx","cy","r","n","arc_deg","rot_deg"}}}}   (regular polygon of n sides; with arc_deg < 360 only that
+        part of it, closed by a straight side: an apse is n 8, arc_deg 180, its round side facing rot_deg)
    | {{"polygon": [[x,y],...]}},
  "base_z": m, "height": m (wall top above base_z),
  "cantilever_of": "<id of the host part>" (upper floors projecting past the part below, or a deck fixed to a tower),
@@ -112,6 +114,11 @@ Modelling guidance:
   "openings": false on the blank floors, not a window on every floor. Say whether arches are round, pointed or
   segmental (arch_shape), whether windows are paired (lights: 2) and whether round windows (oculus) sit above them.
 - A podium is usually a separate rectangular volume along the street, not the whole site outline.
+- Apses and chevets are POLYGONAL unless clearly round: an "ngon" with arc_deg 180 (n 8 or 10) and a "hip" roof;
+  radiating chapels are small ngon volumes around it, each with its own hip roof. Do not use a circle with a cone.
+- Spires: roof "spire" (an octagonal spire with broaches, corner pinnacles and gabled lucarnes) on the tower top;
+  "pyramid" only for plain pyramid roofs. A belfry is the top storey of the tower with tall louvred openings.
+- Aisles or wings whose bays each carry a small gable: feature "gables" on that wall (see the facade step).
 - Tapering towers (spires, bud / bullet shapes, pyramids of glass): ONE part with "taper" instead of a stack of
   ever smaller boxes; a slanted top is roof "shed". Several tapered parts may be stacked (top outline of one =
   base outline of the next).
@@ -206,6 +213,8 @@ so the model reads like the photos up close. For every part, return its complete
   {{"type": "finial", "x", "y", "z", "height", "radius", "style": "spike|ball", "material"}}   roof ornaments; x, y in
       model coordinates; z = where it stands above the part's base, default the wall top
   {{"type": "cresting", "z", "height", "spacing", "material"}}   iron railing on a roof ridge or flat roof top
+  {{"type": "gables", "facing_deg", "spacing", "width", "height", "depth", "count", "offset"}}   a row of small
+      gables standing on the wall top, one per bay (aisle chapels, dormers), each with its own pitched roof
   Only details clearly visible in the photos; at most 30 per part. A flat panel remains right for signs, friezes and
   low reliefs. Statues cannot be modelled: leave them out rather than standing a board in their place.
 - Walls that differ: "sides": [{{"facing_deg", any of opening_type, bay_spacing, opening_width, opening_height, sill,

@@ -135,8 +135,22 @@ def rounded_rect_polygon(cx, cy, w, d, rot_deg=0.0, r=0.0, corner_segments=6):
     return out
 
 
+def ngon_polygon(cx, cy, r, n=8, arc_deg=360.0, rot_deg=0.0):
+    """A regular polygon of n sides (corners on a circle of radius r), or the part of one spanning arc_deg, closed by
+    its straight chord: arc 180 with n 8 is a half-octagon apse whose straight side faces rot_deg + 180."""
+    n = max(3, int(n))
+    arc = max(30.0, min(360.0, float(arc_deg)))
+    step = 360.0 / n
+    if arc >= 359.9:
+        angs = [rot_deg + step / 2 + i * step for i in range(n)]
+    else:
+        k = max(1, int(round(arc / step)))
+        angs = [rot_deg - k * step / 2 + i * step for i in range(k + 1)]
+    return ensure_ccw([(cx + r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a))) for a in angs])
+
+
 def footprint_polygon(fp, main_poly):
-    """Polygon of a part footprint: "main", polygon, rect, rounded_rect, stadium or circle (local metres)."""
+    """Polygon of a part footprint: "main", polygon, rect, rounded_rect, stadium, circle or ngon (local metres)."""
     if fp == "main":
         return list(main_poly)
     if "polygon" in fp:
@@ -150,6 +164,9 @@ def footprint_polygon(fp, main_poly):
     if "stadium" in fp:
         r = fp["stadium"]
         return rounded_rect_polygon(r["cx"], r["cy"], r["w"], r["d"], r.get("rot_deg", 0.0), min(r["w"], r["d"]) / 2, 8)
+    if "ngon" in fp:
+        g = fp["ngon"]
+        return ngon_polygon(g["cx"], g["cy"], g["r"], g.get("n", 8), g.get("arc_deg", 360.0), g.get("rot_deg", 0.0))
     c = fp["circle"]
     return circle_polygon(c["cx"], c["cy"], c["r"], 24)
 
@@ -640,6 +657,9 @@ def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
                         mesh.f((mesh.v(ib[0], ib[1], eave_z), mesh.v(ia[0], ia[1], eave_z),
                                 mesh.v(ia[0], ia[1], zt), mesh.v(ib[0], ib[1], zt)), "wall")   # inner face
         return
+    if rtype == "spire":
+        build_spire(poly, eave_z, float(roof.get("height", 10.0) or 10.0), mesh, roof)
+        return
     if rtype == "pyramid":
         c = centroid(poly)
         apex = mesh.v(c[0], c[1], eave_z + roof.get("height", 3.0))
@@ -670,6 +690,77 @@ def build_part(poly, base_z, eave_z, roof, mesh: Mesh, taper=None):
         return
     # hip (default for unknown): straight-skeleton approximation by stepped inward offsets
     build_hip(poly, eave_z, roof.get("height"), mesh, roof.get("pitch_deg"))
+
+
+SPIRE_PINNACLE = 0.18          # corner pinnacle height as a share of the spire height
+SPIRE_LUCARNE = 0.16           # lucarne (gabled dormer) height as a share of the spire height
+
+
+def build_spire(poly, eave_z, height, mesh: Mesh, roof=None):
+    """A spire: an octagon set inside the top outline rises to the apex; broaches (sloping triangles) fill the
+    corners at the base; a pinnacle stands on each corner and a gabled lucarne on each side (both optional:
+    roof "pinnacles": false, "lucarnes": false)."""
+    roof = roof or {}
+    poly = ensure_ccw(poly)
+    c = centroid(poly)
+    n = len(poly)
+    r_in = inradius_estimate(poly)
+    octo = ngon_polygon(c[0], c[1], r_in / math.cos(math.pi / 8), 8, 360.0,
+                        math.degrees(math.atan2(poly[0][1] - c[1], poly[0][0] - c[0])) + 22.5)
+    apex = mesh.v(c[0], c[1], eave_z + height)
+    broach_z = eave_z + 0.12 * height
+    octo_up = [(c[0] + (x - c[0]) * 0.88, c[1] + (y - c[1]) * 0.88) for x, y in octo]   # the octagon at broach top
+    for i in range(8):
+        a, b = octo_up[i], octo_up[(i + 1) % 8]
+        mesh.f((mesh.v(a[0], a[1], broach_z), mesh.v(b[0], b[1], broach_z), apex), "roof")
+    # broaches: from the outline at the eave to the octagon at broach height
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        near = lambda p: min(range(8), key=lambda k: math.dist(octo_up[k], p))
+        ka, kb = near(a), near(b)
+        mesh.f((mesh.v(a[0], a[1], eave_z), mesh.v(b[0], b[1], eave_z),
+                mesh.v(octo_up[kb][0], octo_up[kb][1], broach_z), mesh.v(octo_up[ka][0], octo_up[ka][1], broach_z)),
+               "roof")
+        if ka != kb and (kb - ka) % 8 not in (0, 1):
+            k = (ka + 1) % 8
+            while k != kb:
+                mesh.f((mesh.v(octo_up[k][0], octo_up[k][1], broach_z),
+                        mesh.v(octo_up[(k + 1) % 8][0], octo_up[(k + 1) % 8][1], broach_z),
+                        mesh.v(mid[0], mid[1], eave_z)), "roof")
+                k = (k + 1) % 8
+    side = min(math.dist(poly[i], poly[(i + 1) % n]) for i in range(n))
+    if roof.get("pinnacles", True) and n <= 8:
+        ph, pw = SPIRE_PINNACLE * height, max(0.25, 0.12 * side)
+        for x, y in poly:
+            px, py = c[0] + (x - c[0]) * 0.92, c[1] + (y - c[1]) * 0.92
+            base = [(px - pw / 2, py - pw / 2), (px + pw / 2, py - pw / 2), (px + pw / 2, py + pw / 2),
+                    (px - pw / 2, py + pw / 2)]
+            top = mesh.v(px, py, eave_z + ph)
+            for j in range(4):
+                a, b = base[j], base[(j + 1) % 4]
+                mesh.f((mesh.v(a[0], a[1], eave_z), mesh.v(b[0], b[1], eave_z), top), "trim")
+    if roof.get("lucarnes", True) and n <= 8:
+        lh, lw = SPIRE_LUCARNE * height, max(0.4, 0.28 * side)
+        for i in range(n):
+            a, b = poly[i], poly[(i + 1) % n]
+            L = math.dist(a, b)
+            if L < 1.0:
+                continue
+            t = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+            o = (t[1], -t[0])
+            m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+            at = lambda x, y, z: (m[0] + t[0] * x + o[0] * y, m[1] + t[1] * x + o[1] * y, z)
+            d = max(0.5, 0.35 * r_in)
+            z0, z1 = eave_z + 0.02 * height, eave_z + 0.02 * height + lh * 0.55
+            # front wall with a gable, two roof slopes running back into the spire
+            mesh.f([mesh.v(*at(x, 0.0, z)) for x, z in ((-lw / 2, z0), (lw / 2, z0), (lw / 2, z1), (0.0, z0 + lh),
+                                                         (-lw / 2, z1))], "trim")
+            for sgn in (-1, 1):
+                mesh.f((mesh.v(*at(sgn * lw / 2, 0.0, z1)), mesh.v(*at(0.0, 0.0, z0 + lh)),
+                        mesh.v(*at(0.0, -d, z0 + lh)), mesh.v(*at(sgn * lw / 2, -d, z1))), "roof")
+                mesh.f((mesh.v(*at(sgn * lw / 2, 0.0, z0)), mesh.v(*at(sgn * lw / 2, 0.0, z1)),
+                        mesh.v(*at(sgn * lw / 2, -d, z1)), mesh.v(*at(sgn * lw / 2, -d, z0))), "trim")
 
 
 def _plane_fn(poly, roof, eave_z, rise):
@@ -1564,6 +1655,35 @@ def _feature_3d(kind, ft, poly, base_z, top_z, taper, mesh, budget, tag) -> int:
                 if abs(xx) <= half and used + 48 <= budget:
                     used += _column(mesh, at, xx, y, z, h, d, tag)
         return used
+    if kind == "gables":
+        # a row of gables standing on the wall top of one facade: chapels, dormers, aisle bays each with its own gable
+        h = max(0.5, float(ft.get("height", 2.5)))
+        spacing = max(1.0, float(ft.get("spacing", 4.0)))
+        w = max(0.6, min(spacing - 0.2, float(ft.get("width", spacing * 0.8))))
+        depth = max(0.5, float(ft.get("depth", 3.0)))
+        zt = top_z if ft.get("z") is None else base_z + float(ft["z"])
+        face = _face_for(ring_at(poly, base_z, top_z, taper, zt - 0.01), ft.get("facing_deg", 270))
+        if face is None:
+            return 0
+        a, _, ln, t, o = face
+        count = max(1, int(ft.get("count") or int((ln - 0.4) // spacing)))
+        span = (count - 1) * spacing
+        off = float(ft.get("offset", 0.0))
+        used = 0
+        for i in range(count):
+            if used + 8 > budget:
+                break
+            s = ln / 2 + off - span / 2 + i * spacing
+            if s - w / 2 < 0 or s + w / 2 > ln:
+                continue
+            m = (a[0] + t[0] * s, a[1] + t[1] * s)
+            at = lambda x, y, z, m=m: (m[0] + t[0] * x + o[0] * y, m[1] + t[1] * x + o[1] * y, z)
+            mesh.f([mesh.v(*at(x, 0.02, z)) for x, z in ((-w / 2, zt), (w / 2, zt), (0.0, zt + h))], "wall")
+            for sgn in (-1, 1):
+                mesh.f((mesh.v(*at(sgn * w / 2, 0.02, zt)), mesh.v(*at(0.0, 0.02, zt + h)),
+                        mesh.v(*at(0.0, -depth, zt + h)), mesh.v(*at(sgn * w / 2, -depth, zt))), "roof")
+            used += 5
+        return used
     if kind in ("balustrade", "cresting"):
         h = max(0.2, float(ft.get("height", 1.0 if kind == "balustrade" else 0.8)))
         spacing = float(ft.get("spacing", 0.55 if kind == "balustrade" else 0.5))
@@ -1701,7 +1821,7 @@ def clear_covered_faces(mesh, covered) -> None:
     mesh.faces, mesh.tags = faces, tags
 
 
-DEPTH_FEATURES = ("column", "balustrade", "balcony", "colonnade", "pediment", "finial", "cresting")
+DEPTH_FEATURES = ("column", "balustrade", "balcony", "colonnade", "pediment", "finial", "cresting", "gables")
 
 
 def features(poly, base_z, top_z, taper, feats, mesh, budget_left: int = 10 ** 9) -> int:

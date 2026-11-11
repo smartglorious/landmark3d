@@ -12,7 +12,7 @@ import jsonschema
 
 from . import geom
 
-ROOF_TYPES = ["flat", "gable", "hip", "pyramid", "dome", "shed", "mansard", "gambrel", "none"]
+ROOF_TYPES = ["flat", "gable", "hip", "pyramid", "dome", "shed", "mansard", "gambrel", "spire", "none"]
 OSM_ROOF = {"flat": "flat", "gabled": "gable", "hipped": "hip", "pyramidal": "pyramid", "dome": "dome",
             "onion": "dome", "skillion": "shed", "half-hipped": "hip", "mansard": "mansard", "gambrel": "gambrel",
             "round": "dome", "saltbox": "gable", "cone": "pyramid"}
@@ -71,6 +71,13 @@ PART_SCHEMA = {
                 "properties": {"cx": {"type": "number"}, "cy": {"type": "number"}, "w": {"type": "number", "exclusiveMinimum": 0},
                                "d": {"type": "number", "exclusiveMinimum": 0}, "rot_deg": {"type": "number"},
                                "r": {"type": "number", "minimum": 0}}}}},
+            {"type": "object", "required": ["ngon"], "properties": {"ngon": {
+                "type": "object", "required": ["cx", "cy", "r"],
+                "properties": {"cx": {"type": "number"}, "cy": {"type": "number"},
+                               "r": {"type": "number", "exclusiveMinimum": 0},
+                               "n": {"type": "integer", "minimum": 3, "maximum": 24},
+                               "arc_deg": {"type": "number", "minimum": 30, "maximum": 360},
+                               "rot_deg": {"type": "number"}}}}},
             {"type": "object", "required": ["stadium"], "properties": {"stadium": {
                 "type": "object", "required": ["cx", "cy", "w", "d"],
                 "properties": {"cx": {"type": "number"}, "cy": {"type": "number"}, "w": {"type": "number", "exclusiveMinimum": 0},
