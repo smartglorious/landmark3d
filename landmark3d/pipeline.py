@@ -830,11 +830,21 @@ def _opening_alias(rule: dict) -> dict:
     return dict(rule, opening_type=alias) if alias else rule
 
 
+def _glazed_floor(rule: dict) -> dict:
+    """A curtain wall is a whole facade type; for one floor band of a punched facade the AI means a fully glazed
+    floor, which the engine draws as storefront glazing (held-out 2026-11-11: Vietcombank Tower failed on this)."""
+    if rule.get("opening_type") == "curtain_wall":
+        return dict(rule, opening_type="storefront")
+    return rule
+
+
 def _alias_wall(fac: dict) -> None:
+    whole_glass = fac.get("opening_type") == "curtain_wall"
     if isinstance(fac.get("ground"), dict):
-        fac["ground"] = _opening_alias(fac["ground"])
+        fac["ground"] = _glazed_floor(_opening_alias(fac["ground"]))
     if isinstance(fac.get("floors"), list):
-        fac["floors"] = [_opening_alias(r) if isinstance(r, dict) else r for r in fac["floors"]]
+        fac["floors"] = [_glazed_floor(_opening_alias(r)) if isinstance(r, dict) else r for r in fac["floors"]
+                         if not (whole_glass and isinstance(r, dict) and r.get("opening_type") == "curtain_wall")]
 
 
 def _alias_side(side: dict) -> dict:

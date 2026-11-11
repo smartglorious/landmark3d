@@ -122,3 +122,18 @@ def test_opening_words_without_geometry_become_engine_types():
         assert pipeline.sanitize_facades({"parts": [one]})["parts"][0]["facade"]["opening_type"] == want
     made_up = dict(hall, facade={"opening_type": "zigzag"})
     assert pipeline.sanitize_facades({"parts": [made_up]})["parts"][0]["facade"]["opening_type"] == "zigzag"  # the AI is asked again
+
+
+def test_curtain_wall_on_one_floor_becomes_glazing_not_an_ai_failure():
+    """Held-out 2026-11-11: the AI wrote curtain_wall for single floors; the schema rejected the whole answer."""
+    from landmark3d import pipeline, spec as spec_mod
+    tower = {"id": "tower", "footprint": "main", "base_z": 0, "height": 40, "roof": {"type": "flat"},
+             "facade": {"opening_type": "rect", "floors": [{"from": 0, "to": 1, "opening_type": "curtain_wall"}],
+                        "ground": {"opening_type": "curtain_wall"}}}
+    glass = {"id": "glass", "footprint": "main", "base_z": 40, "height": 20, "roof": {"type": "flat"},
+             "facade": {"opening_type": "curtain_wall", "floors": [{"from": 0, "to": 3, "opening_type": "curtain_wall"}]}}
+    out = pipeline.sanitize_facades({"parts": [tower, glass]})
+    t, g = out["parts"][0]["facade"], out["parts"][1]["facade"]
+    assert t["floors"][0]["opening_type"] == "storefront" and t["ground"]["opening_type"] == "storefront"
+    assert g["floors"] == [] and g["opening_type"] == "curtain_wall"
+    assert spec_mod.validate_massing({"parts": out["parts"], "materials": {"wall": {"srgb": [1, 2, 3]}}}) == []
