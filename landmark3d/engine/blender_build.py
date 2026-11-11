@@ -341,8 +341,8 @@ SKIN_FACING = -0.5          # ... unless they face back into the building: side 
                             # cornice tops take the image's colour at their own position
 
 
-def panel_material(job):
-    return make_material("L3D_panels", (255, 255, 255), 0.7, job["panel_atlas"], tint=None, clamp=True)
+def panel_material(job, atlas=None, name="L3D_panels"):
+    return make_material(name, (255, 255, 255), 0.7, atlas or job["panel_atlas"], tint=None, clamp=True)
 
 
 def apply_skins(ob, poly, part, skins, mat):
@@ -577,8 +577,9 @@ def main():
                                                                                         for pn in mine})}
         ob = link_mesh(f"L3D_{part['id']}", gm, tag_mat, mats)
         planar_uvs(ob)
-        if skins and job.get("panel_atlas"):
-            skinned_faces += apply_skins(ob, poly, part, skins, panel_material(job))
+        if skins and (skins[0].get("atlas") or job.get("panel_atlas")):   # one atlas per part (P7)
+            skinned_faces += apply_skins(ob, poly, part, skins,
+                                         panel_material(job, skins[0].get("atlas"), f"L3D_skin_{part['id']}"))
         ob["l3d_part"] = part["id"]
         part_objects.append((part["id"], ob))
 

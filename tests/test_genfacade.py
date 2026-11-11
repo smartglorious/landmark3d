@@ -195,3 +195,22 @@ def test_opening_assemblies_are_on_by_default_without_the_v2_flag(prj):
     assert engine.engine_settings(False)["opening_assemblies"] is True
     assert engine.engine_settings(False, opening_assemblies=False)["opening_assemblies"] is False
     assert engine.engine_settings(True, opening_assemblies=False)["opening_assemblies"] is True
+
+
+def test_generated_skins_get_one_atlas_per_part_at_full_width(prj):
+    """P7: each part's generated faces go to their own atlas, a long face keeps its width (no half-atlas cap)."""
+    from landmark3d import textures as textures_mod
+    Image.new("RGB", (1800, 320), (200, 180, 120)).save(prj.path("input", "textures", "long.jpg"))
+    Image.new("RGB", (400, 320), (200, 180, 120)).save(prj.path("input", "textures", "b.jpg"))
+    gen = {"auto": True, "mode": "panel", "z0": 0, "z1": 10, "licence": "ai_generated", "kind": "generated",
+           "generated": True, "source_id": "codex-generated"}
+    prj.write_json("input/textures.json", {"textures": [
+        dict(gen, id="TX-1", file="input/textures/long.jpg", part="wing", side="face0", edge_index=0),
+        dict(gen, id="TX-2", file="input/textures/b.jpg", part="tower", side="face0", edge_index=0)]})
+    _, panels, atlas = textures_mod.build_job(prj)
+    by = {p["id"]: p for p in panels}
+    assert atlas is None                                     # no photo panels: no shared atlas
+    assert by["TX-1"]["atlas"] != by["TX-2"]["atlas"] and "wing" in by["TX-1"]["atlas"]
+    with Image.open(by["TX-1"]["atlas"]) as im:
+        u0, _, u1, _ = by["TX-1"]["uv"]
+        assert (u1 - u0) * im.width > 1700

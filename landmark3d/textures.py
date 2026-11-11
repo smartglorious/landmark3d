@@ -112,8 +112,10 @@ def remove(prj: Project, tid: str) -> bool:
 ATLAS_PADDING_PX = 8
 
 
-def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048) -> tuple[str | None, dict]:
-    """Shelf-pack the panel images (with crops) into one JPEG atlas. Returns (atlas path, {id: [u0, v0, u1, v1]})."""
+def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048, name: str = "panel_atlas.jpg",
+                cell_max: int | None = None, scale0: float = 1.0) -> tuple[str | None, dict]:
+    """Shelf-pack the panel images (with crops) into one JPEG atlas. Returns (atlas path, {id: [u0, v0, u1, v1]}).
+    cell_max: widest cell in px (default half the atlas); scale0: starting scale of every image."""
     if not panels:
         return None, {}
     imgs = []
@@ -124,13 +126,14 @@ def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048) -> tuple[s
             w, h = im.size
             im = im.crop((int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)))
         imgs.append((t["id"], im))
-    scale = 1.0
+    scale = scale0
+    cell_max = cell_max or max_px // 2
     for _ in range(12):
         x, y, row_h, ok = ATLAS_PADDING_PX, ATLAS_PADDING_PX, 0, True
         width = max_px - ATLAS_PADDING_PX
         cells = []
         for tid, im in sorted(imgs, key=lambda p: -p[1].size[1]):
-            w = max(8, int(min(im.size[0], max_px // 2) * scale))
+            w = max(8, int(min(im.size[0], cell_max) * scale))
             h = max(8, int(im.size[1] * w / im.size[0]))
             if x + w > width:
                 x, y, row_h = ATLAS_PADDING_PX, y + row_h + 2 * ATLAS_PADDING_PX, 0
@@ -168,9 +171,16 @@ def pack_panels(prj: Project, panels: list[dict], max_px: int = 2048) -> tuple[s
         atlas.paste(bleed, (x - pad, y - pad))
         inset = 1
         uv[tid] = [(x + inset) / aw, 1 - (y + h - inset) / ah, (x + w - inset) / aw, 1 - (y + inset) / ah]
-    out = prj.path("output", "panel_atlas.jpg")
+    out = prj.path("output", name)
     atlas.save(out, "JPEG", quality=88, subsampling=0)
     return str(out), uv
+
+
+SKIN_PX_BUDGET = 12_000_000     # all skin atlases together (px); above it every skin image is scaled down evenly
+
+
+def _safe(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))[:60]
 
 
 def build_job(prj: Project, max_px: int = 2048) -> tuple[dict, list, str | None]:
@@ -185,11 +195,28 @@ def build_job(prj: Project, max_px: int = 2048) -> tuple[dict, list, str | None]
                                      "tint": t.get("tint")}
         elif t["mode"] == "panel":
             panels.append(t)
-    atlas, uv = pack_panels(prj, panels, max_px)
-    # generated facades follow the model's own bay grid, so they skin the real wall mesh (relief kept); photo panels
-    # follow the photo, so they stay in front of the wall and replace the modelled detail
+    # Generated facades follow the model's own bay grid, so they skin the real wall mesh (relief kept), one atlas per
+    # part so a part's faces keep their resolution (P7); photo panels follow the photo, so they stay in front of the
+    # wall in the shared atlas and replace the modelled detail.
+    skins = [t for t in panels if t.get("generated") and t.get("edge_index") is not None]
+    others = [t for t in panels if t not in skins]
+    atlas, uv = pack_panels(prj, others, max_px)
+    for old in prj.root.joinpath("output").glob("skin_atlas_*.jpg"):
+        old.unlink()
+    total = 0
+    for t in skins:
+        with Image.open(prj.root / t["file"]) as im:
+            total += im.size[0] * im.size[1]
+    scale0 = min(1.0, (SKIN_PX_BUDGET / total) ** 0.5) if total else 1.0
+    skin_atlas = {}
+    for part in sorted({t["part"] for t in skins}):
+        mine = [t for t in skins if t["part"] == part]
+        path, puv = pack_panels(prj, mine, max_px, name=f"skin_atlas_{_safe(part)}.jpg", cell_max=max_px,
+                                scale0=scale0)
+        uv.update(puv)
+        skin_atlas.update({t["id"]: path for t in mine})
     job_panels = [{"id": t["id"], "part": t["part"], "side": t["side"], "z0": t.get("z0"), "z1": t.get("z1"),
                    "edge_index": t.get("edge_index"), "uv": uv[t["id"]],
-                   **({"skin": True} if t.get("generated") and t.get("edge_index") is not None else {})}
+                   **({"skin": True, "atlas": skin_atlas[t["id"]]} if t["id"] in skin_atlas else {})}
                   for t in panels if t["id"] in uv]
     return repeat, job_panels, atlas
