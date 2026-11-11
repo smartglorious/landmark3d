@@ -795,7 +795,8 @@ def crop_band(img, face, band):
     return out, f
 
 
-def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: str) -> dict:
+def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: str,
+             tiles: dict | None = None) -> dict:
     data = textures_mod.load(prj)
     manual = [t for t in data["textures"] if not t.get("auto") and not t.get("from_sources")]
     manual_mats = {t.get("material") for t in manual if t.get("mode") == "repeat"}
@@ -816,7 +817,7 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
                         "source_id": src.get("id"), "material": None, "tint": None, "crop": None, "kind": it["kind"],
                         **({"generated": True} if it["kind"] == "generated" else {})})
     entries += _swatches_v2(prj, spec, [dict(it, img=im) for it, im in zip(items, imgs)], plan_obj, photos,
-                            manual_mats, rejected)              # sample the colour-corrected faces, as saved
+                            manual_mats, rejected, tiles)       # sample the colour-corrected faces, as saved
     prj.write_json("input/textures.json", {"textures": manual + entries, "auto_for": h})
     from .detail import materials as detail_materials
     dens: dict = {}
@@ -838,7 +839,7 @@ def apply_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, h: s
 
 
 def _swatches_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, manual_mats: set,
-                 rejected: list) -> list:
+                 rejected: list, tiles: dict | None = None) -> list:
     """Repeat textures per material. Candidates: the AI's swatch boxes (if their colour matches), plain areas of the
     kept face textures (walls), and plain areas of the band just above each wall crop (roofs). The plainest
     candidate wins (least large-scale structure), and is flattened and made periodic (smarttex.quads.seamless)."""
@@ -852,6 +853,9 @@ def _swatches_v2(prj: Project, spec: dict, items: list, plan_obj: dict, photos, 
         a = np.asarray(img.convert("RGB").resize((128, 128)))
         cands.setdefault(mat, []).append((quads.structure(a), img, world_m, src, origin))
 
+    for m, (tile_img, world_m, src) in (tiles or {}).items():     # generated material tiles (P8) win
+        if m not in manual_mats and m in spec["materials"]:
+            cands.setdefault(m, []).append((-1.0, tile_img, world_m, src, "generated tile"))
     for s in plan_obj.get("swatches", []):
         if s.get("material") in manual_mats or s.get("material") not in spec["materials"]:
             continue
@@ -1003,6 +1007,17 @@ def _generated_items(prj: Project, spec: dict, photos, done: set, notes: list, o
                                owner_notes=owner)
 
 
+def _material_tiles(prj: Project, spec: dict, photos, notes: list) -> dict:
+    from . import settings as settings_mod
+    from .smarttex import genfacade
+    if not settings_mod.load().get("generated_textures", True) or not genfacade.codex_cli() or not photos:
+        return {}
+    manual = {t.get("material") for t in textures_mod.load(prj)["textures"]
+              if not t.get("auto") and not t.get("from_sources") and t.get("mode") == "repeat"}
+    refs = part_refs(spec, photos)
+    return genfacade.material_tiles(prj, spec, lambda pid: refs.get(pid) or [p for p, _ in photos], manual, notes)
+
+
 def _all_faces(spec: dict) -> set:
     out = set()
     for p in spec["parts"]:
@@ -1051,7 +1066,9 @@ def run_v2(prj: Project, provider) -> dict:
             crops = qa_v2(prj, provider, crops)
     items = crops + projected + generated
     quads.match_part_colours(items)
-    res = apply_v2(prj, spec, items, obj, photos, h)
+    tiles = _material_tiles(prj, spec, photos, notes)
+    res = apply_v2(prj, spec, items, obj, photos, h, tiles)
+    res["generated_tiles"] = sorted(tiles)
     res["dropped_by_auto_qa"] = n_before - n_auto
     res["dropped_by_qa"] = n_auto - len(crops)
     res["projected_faces"] = len(projected)

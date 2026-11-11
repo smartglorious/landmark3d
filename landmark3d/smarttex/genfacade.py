@@ -614,3 +614,105 @@ def preview_layouts(prj, spec: dict) -> list:
                                  "span_m": list(span), "features": si["labels"]})
         rows.append(row)
     return rows
+
+
+# ----------------------------------------------------------------------------------------------- material tiles
+MATERIAL_PROMPT = """Use the image generation tool to create ONE image, then reply with only the full path of the image file.
+
+Create a SEAMLESS, TILEABLE, square texture of the {slot} material "{material}" of {name}, seen perfectly straight on
+(no perspective), covering about {size:g} m x {size:g} m of surface.
+- Colour about RGB {rgb}. Copy the real material from the attached photos of the building: {what}.
+- Even, flat daylight; no shadows of objects, no windows, no edges, corners, gutters or ornaments, no sky, no plants,
+  no text. Opposite edges must continue seamlessly so the image repeats without visible seams.
+{feedback}"""
+MATERIAL_WORLD_M = 3.0
+MATERIAL_STRUCTURE_MAX = 18.0     # large-scale structure of a material tile (2x a plain swatch: tiles and bricks allowed)
+
+
+def check_material(img: Image.Image, srgb) -> list[str]:
+    from . import quads
+    probs = []
+    a = np.asarray(img.convert("RGB").resize((128, 128), Image.LANCZOS))
+    if metrics.sky_share(np.asarray(img.convert("RGB"))) > metrics.THRESHOLDS["sky_share_max"]:
+        probs.append("there is sky in the image: show only the material")
+    if srgb is not None and float(np.linalg.norm(np.median(a.reshape(-1, 3), axis=0).astype(np.float32)
+                                                 - np.asarray(srgb[:3], np.float32))) > COLOUR_MAX:
+        probs.append(f"the colour is far from about RGB {tuple(srgb[:3])}")
+    if quads.structure(a) > MATERIAL_STRUCTURE_MAX:
+        probs.append("the image has large shapes, edges or shading: it must be an even, repeating material only")
+    return probs
+
+
+def _stem(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))[:60]
+
+
+def generate_material(prj, spec: dict, material: str, slot: str, refs: list, generate=None) -> dict:
+    """A seamless tile of one material (cached in reports/genfacade/mat_<material>.png). Returns {"img" (seamless,
+    512 px), "world_size_m", "accepted", "problems"} or {"error"}."""
+    from . import quads
+    srgb = ((spec.get("materials") or {}).get(material) or {}).get("srgb")
+    what = ("roof covering: tile or sheet shape, size and courses, joints" if slot == "roof"
+            else "wall surface: stucco, brick, stone or concrete grain, joints and weathering")
+    base = dict(name=spec.get("name", ""), slot=slot, material=material, size=MATERIAL_WORLD_M,
+                rgb=tuple(srgb[:3]) if srgb else "as in the photos", what=what)
+    ref_paths = [prj.root / r for r in refs][:2]
+    out_dir = prj.root / "reports" / "genfacade"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = "mat_" + _stem(material)
+    key = _key("material", json.dumps(base, sort_keys=True), *[p.read_bytes() for p in ref_paths if p.is_file()])
+    img_path, meta_path = out_dir / f"{stem}.png", out_dir / f"{stem}.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    if meta.get("key") == key and img_path.is_file():
+        img = Image.open(img_path).convert("RGB")
+        return {"img": quads.seamless(img, 512), "world_size_m": MATERIAL_WORLD_M, "cached": True,
+                "accepted": meta.get("accepted", False), "problems": meta.get("problems", [])}
+    feedback, problems, img, attempts = "", [], None, 0
+    for _ in range(2):
+        attempts += 1
+        try:
+            got = (generate or codex_generate)(MATERIAL_PROMPT.format(**base, feedback=feedback),
+                                               [p for p in ref_paths if p.is_file()])
+        except Exception as exc:
+            return {"error": f"generation failed: {str(exc)[:200]}", "attempts": attempts}
+        img = Image.open(got).convert("RGB")
+        problems = check_material(img, srgb)
+        if not problems:
+            break
+        feedback = "The previous attempt had these problems, fix them: " + "; ".join(problems) + "."
+    img.save(img_path)
+    meta_path.write_text(json.dumps({"key": key, "problems": problems, "attempts": attempts,
+                                     "accepted": not problems, "slot": slot, "generator": GENERATOR,
+                                     "references": refs[:2]}, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"img": quads.seamless(img, 512), "world_size_m": MATERIAL_WORLD_M, "cached": False,
+            "accepted": not problems, "problems": problems, "attempts": attempts}
+
+
+def is_glass(name: str, mat: dict) -> bool:
+    return "glass" in name.lower() or float((mat or {}).get("metallic", 0) or 0) > 0.5
+
+
+def material_tiles(prj, spec: dict, refs_for, skip: set, notes: list, generate=None) -> dict:
+    """{material: (tile, world_size_m, src)} generated for the roof and wall materials of the enabled parts (glass,
+    metal and openings excluded, and the materials in skip, e.g. the owner's own textures)."""
+    mats = spec.get("materials") or {}
+    want = {}
+    for p in spec.get("parts", []):
+        if p.get("enabled", True) is False:
+            continue
+        for slot in ("roof", "wall"):
+            m = (p.get("material") or {}).get(slot)
+            if m and m in mats and m not in skip and m != "opening" and not is_glass(m, mats[m]):
+                want.setdefault(m, (slot, p["id"]))
+    out = {}
+    for m, (slot, pid) in sorted(want.items()):
+        refs = refs_for(pid)
+        res = generate_material(prj, spec, m, slot, refs, generate)
+        notes.append({"generated": f"material {m}", "material": True,
+                      **{k: res.get(k) for k in ("problems", "attempts", "cached", "accepted", "error")}})
+        if res.get("error") or not res.get("accepted"):
+            continue
+        out[m] = (res["img"], res["world_size_m"], {"id": "codex-generated", "licence": "ai_generated",
+                                                     "author": f"{GENERATOR}, style from "
+                                                     + ", ".join(Path(r).name for r in refs[:2])})
+    return out

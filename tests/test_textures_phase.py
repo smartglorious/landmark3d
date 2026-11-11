@@ -35,9 +35,21 @@ def prj(tmp_path, monkeypatch):
     return p
 
 
+def _facade_calls(calls):
+    return [c for c in calls if "facade texture" in c]
+
+
 def _painter(calls):
     def fake(prompt, images):
         calls.append(prompt)
+        if "TILEABLE" in prompt:                       # a material tile: noise around the colour asked for
+            import re
+            rgb = [int(v) for v in re.search(r"RGB \((\d+), (\d+), (\d+)\)", prompt).groups()]
+            a = np.clip(np.array(rgb, np.float32) + np.random.default_rng(len(calls)).normal(0, 6, (256, 256, 3)),
+                        0, 255).astype(np.uint8)
+            path = images[0].parent / f"tile_{len(calls)}.png"
+            Image.fromarray(a).save(path)
+            return path
         lay = np.asarray(Image.open(images[-1]).convert("L"))
         out = np.zeros(lay.shape + (3,), np.uint8)
         out[:] = (220, 190, 110)
@@ -98,7 +110,7 @@ def test_generation_first_no_crop_ai_when_every_face_is_generated(prj, codex):
     ai = CountingAI()
     res = autotex.run_v2(prj, ai)
     assert ai.asked == 0 and res["generated_faces"] == 4 and not res["crop_fallback"] and res["bare_faces"] == 0
-    assert len(codex) == 1                                    # one elevation for the part, tiled on its 4 faces
+    assert len(_facade_calls(codex)) == 1                     # one elevation for the part, tiled on its 4 faces
 
 
 def test_bare_faces_are_reported_and_the_crop_fallback_needs_an_ai(prj, codex):
@@ -111,13 +123,13 @@ def test_bare_faces_are_reported_and_the_crop_fallback_needs_an_ai(prj, codex):
 def test_owner_choices_colour_and_regenerate_with_note(prj, codex):
     from landmark3d import autotex
     autotex.run_v2(prj, None)
-    assert len(codex) == 1
+    assert len(_facade_calls(codex)) == 1
     autotex.set_override(prj, "hall", "colour")
     res = autotex.run_v2(prj, None)                          # the choice changes the cache key
-    assert res["generated_faces"] == 0 and res["colour_parts"] == ["hall"] and len(codex) == 1
+    assert res["generated_faces"] == 0 and res["colour_parts"] == ["hall"] and len(_facade_calls(codex)) == 1
     autotex.set_override(prj, "hall", "regenerate", "green shutters")
     res = autotex.run_v2(prj, None)
-    assert res["generated_faces"] == 4 and len(codex) == 2 and "green shutters" in codex[-1]
+    assert res["generated_faces"] == 4 and len(_facade_calls(codex)) == 2 and "green shutters" in _facade_calls(codex)[-1]
     rv = autotex.review(prj)
     hall = next(r for r in rv["parts"] if r["part"] == "hall")
     assert hall["generated"] and hall["layout"] and hall["kinds"] == ["generated"] and hall["choice"]["round"] == 1
@@ -156,3 +168,17 @@ def test_textures_phase_then_a25_then_build_without_ai(prj, codex, monkeypatch):
     pipeline.approve(prj, "texture_review", "approved")
     pipeline.run_until_blocked(prj)
     assert built == [1]
+
+
+def test_generated_material_tiles_for_roof_and_wall_not_glass(prj, codex):
+    """P8: roof and wall materials get a generated seamless tile, labelled generated; glass gets none."""
+    from landmark3d import autotex, textures
+    res = autotex.run_v2(prj, None)
+    assert res["generated_tiles"] == ["roof", "stucco"]
+    assert not any("glass" in c and "TILEABLE" in c for c in codex)
+    sw = {t["material"]: t for t in textures.load(prj)["textures"] if t.get("mode") == "repeat"}
+    assert sw["roof"]["licence"] == "ai_generated" and sw["roof"]["from"] == "generated tile"
+    n = len(codex)
+    autotex.set_override(prj, "hall", "regenerate")          # another run: the tiles come from the cache
+    autotex.run_v2(prj, None)
+    assert len([c for c in codex[n:] if "TILEABLE" in c]) == 0
