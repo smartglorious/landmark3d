@@ -219,3 +219,21 @@ either:
 - Owner review of the four A3 projects and of A2.5 in the web app.
 - Đức Bà `crossing_clerestory`: Codex twice missed the window rhythm; try "Vẽ lại" with a note at A2.5.
 - Not measured yet: the spec phase with the new facade gate (P5) and the held-out set (needs quota approval).
+
+---
+
+## 2026-11-12 — massing completeness work, release 0.5.0
+
+**Added (all on main, tests 686):** wall exposure checks; facade grammar (arch shapes, coupled lights, oculi,
+buttresses, blank floors) shared by build and texture layouts; shape vocabulary (ngon apses, spires, bay gables);
+volume inventory; photo-review overlays with the building frame from viewpoint matching; azimuth refinement
+(+-15 / +-30 deg); overlay-based candidate selection; volume audit (duplicates and off-site parts dropped);
+three massing drafts; subdivision of large parts and their twins; triangle budget defaults 75k / 60k.
+Roof plan from the satellite view exists but is off (`roof_plan`): AI-traced polygons missed Đức Bà's transept.
+
+**Open:**
+- Đức Bà is still not right (side massing coarse). The owner keeps it as it is for now.
+- All runs of 2026-11-11 evening and 2026-11-12 used **claude-haiku-5-5** (`providers.claude.cli_model = "haiku"`
+  in ~/.landmark3d/settings.json), not Opus: their quality comparisons do not count. Re-evaluate the new steps on
+  the dev set with the intended model before tuning further.
+- Held-out set 2: 2 of 4 to A3 (BENCHMARK.md).
