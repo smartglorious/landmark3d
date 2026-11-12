@@ -262,8 +262,8 @@ Reply with one JSON object: {{"keep": ["ids of the parts whose AFTER version is 
 
 SELECT_PROMPT = """Landmark: {name}. Several candidate massing models were produced in successive review rounds.
 The first attached image(s) are the references: {refs}. Then come {n} candidate images, labelled CANDIDATE 1 ..
-CANDIDATE {n}; each shows the candidate from the viewpoint of photo 1 (left) and from straight above at the
-satellite view's extent and scale (right).
+CANDIDATE {n}; each shows {shows}, and (last tile) the candidate from straight above at the satellite view's extent
+and scale. Count, for each candidate, the volumes whose outline misses the photo.
 
 Pick the candidate that matches the real building best overall: volumes and their positions, plan shapes and
 orientation (check against the satellite view), proportions and heights, facade character. Later is not

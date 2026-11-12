@@ -1334,9 +1334,12 @@ def check_facade(lay) -> list[str]:
         by_slot.setdefault((w["run"], w["lv"]), []).append(w)
     for ws in by_slot.values():
         ws.sort(key=lambda x: x["s"])
-        for a, b in zip(ws, ws[1:]):
-            if a["s"] + a["frame_half"] > b["s"] - b["frame_half"] + eps:
-                errs.append(f"windows at s={a['s']:.1f} and s={b['s']:.1f} (floor {a['lv']}) overlap")
+        for i, a in enumerate(ws):              # windows side by side AND at the same height (an oculus sits above)
+            for b in ws[i + 1:]:
+                if b["s"] - b["frame_half"] >= a["s"] + a["frame_half"] - eps:
+                    break
+                if a["z0"] < b["z0"] + b["h"] - eps and b["z0"] < a["z0"] + a["h"] - eps:
+                    errs.append(f"windows at s={a['s']:.1f} and s={b['s']:.1f} (floor {a['lv']}) overlap")
     return errs
 
 

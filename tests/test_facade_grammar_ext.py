@@ -147,3 +147,11 @@ def test_cresting_on_a_gable_roof_runs_along_the_ridge_not_round_the_walls():
     flat = geom.Mesh()
     geom.features(hall, 0.0, 12.0, None, [{"type": "cresting", "height": 1.0}], flat, roof={"type": "flat"})
     assert max(abs(v[1]) for v in flat.verts) > 4.9       # a flat roof: round the wall top
+
+
+def test_an_oculus_above_coupled_lights_is_not_an_overlap():
+    """Seen on Đức Bà (2026-11-12): the overlap check ignored height, so every oculus over its window was 'overlapping'
+    and the whole facade answer was rejected three times."""
+    out, south = lay({"opening_type": "arch", "bay_spacing": 4, "level_height": 5, "opening_width": 1.8,
+                      "opening_height": 2.4, "sill": 0.6, "lights": 2, "oculus": 0.9})
+    assert any(w["kind"] == "oculus" for w in south) and geom.check_facade(out) == []

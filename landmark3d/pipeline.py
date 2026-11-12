@@ -729,15 +729,18 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
         valid = [c for c in candidates if not check(c)]
         candidates = valid if valid else candidates
     if len(candidates) > 1 and not (log and log[-1].get("verdict") == "match"):
-        massing, pick = select_best(prj, provider, candidates, photos, sat, main, base_materials, st, out_root)
+        massing, pick = select_best(prj, provider, candidates, photos, sat, main, base_materials, st, out_root,
+                                    {int(m["photo"]): m["frame"] for m in matched or [] if m.get("frame")})
         log.append(pick)
     return massing, log
 
 
 def select_best(prj: Project, provider, candidates: list, photos: list, sat, main, base_materials: dict, st: dict,
-                out_root: Path):
-    """The last revision is not always the best and was never rendered: render every candidate (photo-1 view and
-    top view) and let the AI choose. Falls back to the last candidate when anything fails."""
+                out_root: Path, frames: dict | None = None):
+    """The last revision is not always the best and was never rendered: render every candidate from the photo
+    viewpoints (drawn over each photo in its building frame when known, else the photo-1 view) and from above, and
+    let the AI choose. Falls back to the last candidate when anything fails."""
+    from . import overlay
     from PIL import Image, ImageDraw
     from .engine import runner as engine_runner
     entry = {"round": len(candidates), "step": "select"}
@@ -748,6 +751,13 @@ def select_best(prj: Project, provider, candidates: list, photos: list, sat, mai
         v1 = next((v for v in (m.get("views") or []) if int(v.get("photo", 0)) == 1), None) or \
             {"azimuth_deg": 270.0, "elevation_deg": 10.0}
         views = {"photo1": cam_of(v1, m["parts"])}
+        for v in (m.get("views") or [])[:3]:      # every framed photo, so the choice sees all sides
+            try:
+                n = int(v.get("photo", 0))
+            except (TypeError, ValueError):
+                continue
+            if (frames or {}).get(n) and 1 <= n <= len(photos):
+                views[f"photo{n}"] = cam_of(v, m["parts"])
         if sat is not None:
             from .research import satellite
             views["satplan"] = {"ortho_extent": list(satellite.EXTENT_M)}
@@ -758,7 +768,17 @@ def select_best(prj: Project, provider, candidates: list, photos: list, sat, mai
         renders = {p.stem: p for p in engine_runner.preview(prj, cand, views, out_root / f"cand{k}")}
         if "photo1" not in renders:
             continue
-        tiles = [Image.open(renders["photo1"]).convert("RGB")]
+        tiles = []
+        for name, path in sorted(renders.items()):
+            n = int(name[5:]) if name.startswith("photo") and name[5:].isdigit() else None
+            if n is not None and (frames or {}).get(n):
+                try:
+                    tiles.append(overlay.compose(Image.open(photos[n - 1]), Image.open(path).convert("RGB"),
+                                                 frames[n]))
+                except ValueError:
+                    pass
+        if not tiles:
+            tiles = [Image.open(renders["photo1"]).convert("RGB")]
         if "satplan" in renders:
             tiles.append(Image.open(renders["satplan"]).convert("RGB"))
         h = 400
@@ -775,9 +795,15 @@ def select_best(prj: Project, provider, candidates: list, photos: list, sat, mai
     if len(sheets) < 2:
         entry["result"] = "not enough candidate renders; kept the last model"
         return candidates[-1], entry
-    refs = [photos[0]] + ([sat] if sat is not None else [])
-    prompt = agent.SELECT_PROMPT.format(name=st["name"], n=len(sheets),
-                                        refs="photo 1" + (" and the satellite plan view" if sat is not None else ""))
+    framed = bool(frames)
+    refs = ([] if framed else [photos[0]]) + ([sat] if sat is not None else [])
+    prompt = agent.SELECT_PROMPT.format(
+        name=st["name"], n=len(sheets),
+        refs=("the satellite plan view" if sat is not None else "none") if framed else
+        "photo 1" + (" and the satellite plan view" if sat is not None else ""),
+        shows=("the candidate drawn over each reference PHOTO (cyan outline: where the real building sticks out of "
+               "it a volume is missing, where it encloses sky a volume is too large)" if framed else
+               "the candidate from the viewpoint of photo 1"))
     labels = {k for k, _ in sheets}
     try:
         obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt,
