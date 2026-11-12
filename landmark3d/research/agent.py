@@ -182,6 +182,14 @@ Reply with one JSON object:
 {{"matches": [{{"photo": 1, "label": "A".."H", "elevation": "street|raised|aerial", "subject": "whole|<part id>",
   "frame": [left, top, right, bottom], "why": "..."}}, ...]}}"""
 
+AZIMUTH_PROMPT = """Each of the {n} attached images belongs to one reference photo ({photos}, in that order) and
+shows that photo {count} times, numbered 1 .. {count}, with a simplified model of the building drawn over it (cyan
+outline) from slightly different directions around the building (1 and {count} are 30 degrees either way from 3).
+Volumes may be wrong in size: judge the DIRECTION only - which overlay shows the model's volumes in the same order
+and with the same faces turned towards the camera as the photo (where the towers, the gables, the apse, the long
+side are, and how foreshortened each wall is). Reply with one JSON object:
+{{"picks": [{{"photo": <photo number>, "best": 1..{count}, "why": "..."}}, ...]}}"""
+
 TRIAGE_PROMPT = """Landmark: {name} ({location}). The attached contact sheet shows {n} candidate reference photos,
 numbered 1 .. {n}. They will be used to model the building's CURRENT exterior massing (volumes, roofs, facades).
 

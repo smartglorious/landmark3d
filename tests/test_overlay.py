@@ -40,3 +40,39 @@ def test_review_sheet_has_the_overlay_panel_only_with_a_frame(tmp_path):
                                     [0.25, 0.1, 0.75, 0.9])
     ratio = lambda f: Image.open(f).width / Image.open(f).height
     assert ratio(framed) > ratio(plain) * 1.4                      # a third panel (sheets are capped at 1800 px)
+
+
+def test_azimuth_refinement_turns_a_view_to_the_picked_overlay(tmp_path, monkeypatch):
+    """The 8 matched sides are 45 deg apart; the refinement offers +-15 / +-30 deg overlays and applies the pick."""
+    import importlib
+    import json
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.engine import runner
+    from landmark3d.project import Project
+    from landmark3d.research import ai
+    prj = Project.create("Turn Hall", "X", lat=1.0, lon=2.0)
+    photo = tmp_path / "p.jpg"
+    Image.new("RGB", (800, 600), (200, 200, 200)).save(photo)
+
+    def fake_preview(p, spec, views, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = []
+        for name in views:
+            render_img().save(out_dir / f"{name}.png")
+            out.append(out_dir / f"{name}.png")
+        return out
+    monkeypatch.setattr(runner, "preview", fake_preview)
+
+    class Fake(ai.Provider):
+        def chat(self, system, prompt, **k):
+            return ai.AIResult(json.dumps({"picks": [{"photo": 1, "best": 4}]}), "fake", "m", [])
+    views = [{"photo": 1, "azimuth_deg": 90.0, "elevation_deg": 8.0, "frame": [0.1, 0.1, 0.9, 0.9]},
+             {"photo": 2, "azimuth_deg": 180.0, "elevation_deg": 8.0}]                 # no frame: unchanged
+    entry = {}
+    out = pipeline.refine_azimuths(prj, Fake("m"), {}, [photo, photo], views, tmp_path, entry)
+    assert out[0]["azimuth_deg"] == 105.0 and out[1]["azimuth_deg"] == 180.0
+    assert entry["azimuth_refine"] == {"1": 15.0}

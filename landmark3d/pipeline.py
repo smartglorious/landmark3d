@@ -594,12 +594,88 @@ def match_viewpoints(prj: Project, provider, massing: dict, photos: list, main, 
             if subject != "whole" and any(p.get("id") == subject for p in massing["parts"]):
                 ent["focus"] = subject                    # a close-up: frame that part, not the whole building
             out.append(ent)
+    out = refine_azimuths(prj, provider, cand, use, out, out_root, entry)
     entry.update({"images": [sheet.relative_to(prj.root).as_posix()],
                   "differences": [f"photo {m.get('photo')} = side {str(m.get('label')).upper()} "
                                   f"({m.get('elevation', 'street')}): {m.get('why', '')}"[:240] for m in obj["matches"]],
                   "verdict": "viewpoints matched"})
     prj.log("photo viewpoints matched", {"views": out})
     return out, entry
+
+
+AZ_STEPS = (-30.0, -15.0, 0.0, 15.0, 30.0)    # refinement around the matched side (the sides are 45 deg apart)
+
+
+def refine_azimuths(prj: Project, provider, cand: dict, photos: list, views: list, out_root: Path,
+                    entry: dict) -> list:
+    """The 8 sides are 45 degrees apart; a photo can sit anywhere between them. For every framed photo, the model is
+    rendered at the matched direction and +-15 / +-30 degrees and drawn over the photo; one AI look picks the overlay
+    whose view matches. Views without a frame, or when anything fails, keep their side's direction."""
+    from PIL import Image, ImageDraw
+    from . import overlay
+    from .engine import runner as engine_runner
+    framed = [v for v in views if v.get("frame") and not v.get("focus")]
+    if not framed:
+        return views
+    rviews = {f"p{v['photo']}_{k}": {"azimuth_deg": (v["azimuth_deg"] + d) % 360.0,
+                                      "elevation_deg": v["elevation_deg"]}
+              for v in framed for k, d in enumerate(AZ_STEPS)}
+    renders = {p.stem: p for p in engine_runner.preview(prj, cand, rviews, out_root / "azimuths")}
+    sheets, asked = [], []
+    for v in framed:
+        tiles = []
+        for k in range(len(AZ_STEPS)):
+            r = renders.get(f"p{v['photo']}_{k}")
+            if r is None:
+                break
+            try:
+                tiles.append(overlay.compose(Image.open(photos[v["photo"] - 1]), Image.open(r).convert("RGB"),
+                                             v["frame"]))
+            except (ValueError, OSError):
+                break
+        if len(tiles) != len(AZ_STEPS):
+            continue
+        h = 300
+        tiles = [t.resize((int(t.width * h / t.height), h)) for t in tiles]
+        sheet = Image.new("RGB", (sum(t.width for t in tiles) + 10 * (len(tiles) - 1), h + 30), "white")
+        x = 0
+        d = ImageDraw.Draw(sheet)
+        for k, t in enumerate(tiles, start=1):
+            sheet.paste(t, (x, 30))
+            d.text((x + 6, 8), f"{k}", fill="black")
+            x += t.width + 10
+        path = out_root / f"azimuth_photo{v['photo']}.jpg"
+        sheet.save(path, "JPEG", quality=85)
+        sheets.append(path)
+        asked.append(v["photo"])
+    if not sheets:
+        return views
+    prompt = agent.AZIMUTH_PROMPT.format(n=len(sheets), photos=", ".join(f"photo {n}" for n in asked),
+                                         count=len(AZ_STEPS))
+
+    def check(o):
+        picks = o.get("picks")
+        if not isinstance(picks, list):
+            return ['give "picks": [{"photo": n, "best": 1..5}, ...]']
+        return [f"bad pick {p}" for p in picks if not isinstance(p, dict)
+                or not 1 <= int(p.get("best", 0) or 0) <= len(AZ_STEPS)]
+    try:
+        obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=check, images=sheets, retries=1)
+    except Exception as exc:
+        entry["azimuth_refine"] = f"failed, kept the sides: {exc}"[:200]
+        return views
+    best = {int(p["photo"]): int(p["best"]) for p in obj["picks"] if str(p.get("photo", "")).isdigit()
+            or isinstance(p.get("photo"), int)}
+    out = []
+    for v in views:
+        k = best.get(v["photo"])
+        if k and v["photo"] in asked:
+            v = dict(v, azimuth_deg=round((v["azimuth_deg"] + AZ_STEPS[k - 1]) % 360.0, 1),
+                     refined=AZ_STEPS[k - 1])
+        out.append(v)
+    entry["azimuth_refine"] = {str(v["photo"]): v.get("refined", 0.0) for v in out if v["photo"] in asked}
+    prj.log("photo viewpoints refined", entry["azimuth_refine"])
+    return out
 
 
 def photo_review(prj: Project, provider, massing: dict, photos: list, check, main, base_materials: dict, st: dict,
