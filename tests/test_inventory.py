@@ -25,3 +25,14 @@ def test_later_answers_may_add_volumes_but_not_drop_one():
     grown = inventory.merged(inv, {"parts": parts("nave", "apse", "porch"),
                                    "volumes": [{"name": "porch", "part": "porch"}, {"name": "nave", "part": "nave"}]})
     assert [v["name"] for v in grown] == ["nave", "apse", "porch"]
+
+
+def test_a_new_part_repeating_an_existing_one_is_a_duplicate():
+    main = [[-30, -30], [30, -30], [30, 30], [-30, 30]]
+    tower = {"id": "tower", "footprint": {"rect": {"cx": 0, "cy": 0, "w": 8, "d": 8}}, "base_z": 0, "height": 40}
+    body = {"id": "tower_body", "footprint": {"rect": {"cx": 0.5, "cy": 0, "w": 7, "d": 7}}, "base_z": 0, "height": 34}
+    chapel = {"id": "chapel", "footprint": {"rect": {"cx": 12, "cy": 0, "w": 6, "d": 6}}, "base_z": 0, "height": 8}
+    errs = inventory.duplicate_errors([tower, body, chapel], {"tower"}, main)
+    assert len(errs) == 1 and "tower_body" in errs[0]
+    belfry = dict(body, id="belfry", base_z=40, height=6)                       # on top of it: a new volume
+    assert inventory.duplicate_errors([tower, belfry], {"tower"}, main) == []

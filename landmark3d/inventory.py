@@ -64,5 +64,45 @@ def merged(inventory: list, obj: dict) -> list:
     return out
 
 
+DUPLICATE_SHARE = 0.5      # a new part covering this share of an existing part's plan at the same heights is that part
+
+
+def duplicate_errors(parts, old_ids: set, main) -> list[str]:
+    """New parts (ids not in old_ids) that repeat an existing part: most of the smaller plan inside the other and the
+    height ranges overlapping by half or more. An overlay misaligned by perspective makes an existing volume look
+    missing; adding it again doubles it."""
+    from . import geom
+    main = [tuple(p) for p in main]
+    rings = {}
+    for p in parts or []:
+        try:
+            rings[p["id"]] = (geom.footprint_polygon(p["footprint"], main), float(p.get("base_z", 0)),
+                              float(p.get("base_z", 0)) + float(p["height"]))
+        except Exception:
+            continue
+    errs = []
+    for nid, (rn, zn0, zn1) in rings.items():
+        if nid in old_ids:
+            continue
+        for oid, (ro, zo0, zo1) in rings.items():
+            if oid not in old_ids:
+                continue
+            zov = min(zn1, zo1) - max(zn0, zo0)
+            if zov < 0.5 * min(zn1 - zn0, zo1 - zo0):
+                continue
+            small, big = (rn, ro) if geom.area(rn) <= geom.area(ro) else (ro, rn)
+            xs = [x for x, _ in small]
+            ys = [y for _, y in small]
+            pts = [(min(xs) + (max(xs) - min(xs)) * (i + 0.5) / 8, min(ys) + (max(ys) - min(ys)) * (j + 0.5) / 8)
+                   for i in range(8) for j in range(8)]
+            pts = [q for q in pts if geom.point_in_polygon(q, small)]
+            if pts and sum(geom.point_in_polygon(q, big) for q in pts) / len(pts) >= DUPLICATE_SHARE:
+                errs.append(f'new part "{nid}" repeats the existing part "{oid}" (same place and heights): if that '
+                            f'volume is only misplaced or mis-sized in the overlay, correct "{oid}" instead and leave '
+                            f'the volume out of the missing list')
+                break
+    return errs
+
+
 def text(inventory: list) -> str:
     return "; ".join(f'{v.get("name")} = {v.get("part")}' for v in inventory or [] if isinstance(v, dict))

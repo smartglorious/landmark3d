@@ -190,10 +190,12 @@ List the volumes of the REAL building that the model does not have: wherever the
 cyan outline, or a distinct volume (its own roof or wall plane: a transept end, side chapels, a lower aisle, a
 sacristy, a porch, an apse chapel, a belfry stage, a gable, a pavilion, a wing) is covered by one big model block.
 Look photo by photo, from left to right. Ignore trees, vehicles, people, scaffolding and neighbouring buildings, and
-small details (windows, ornaments) - only volumes. At most {most}.
+small details (windows, ornaments) - only volumes. The overlay is scaled into the building's frame and the photo has
+perspective, so outlines are offset by a few percent: a volume the model HAS but shifted or a little too small is
+NOT missing (name it in "misplaced" instead). At most {most}.
 Reply with one JSON object:
 {{"missing": [{{"name": "...", "seen_in": [photo numbers], "where": "position in the photo and size relative to the
-  building"}}, ...]}}   (an empty list when every volume is there)"""
+  building"}}, ...], "misplaced": ["<part id>: what is off", ...]}}   (empty lists when every volume is there)"""
 
 AUDIT_REVISE_PROMPT = """This is the current massing model (same schema and hard rules as before):
 {massing}
