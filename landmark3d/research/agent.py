@@ -197,6 +197,19 @@ Reply with one JSON object:
 {{"volumes": [{{"name": "...", "polygon": [[x, y], ...], "roof": "...", "level": "low|main|high|tower"}}, ...],
   "notes": ["..."]}}"""
 
+SUBDIVIDE_PROMPT = """Landmark: {name}. The attached images are the reference photos with the current 3D model drawn
+over them (cyan outline). Look only at this ONE part of the model:
+{part}
+Other parts (leave them alone): {others}.
+
+In the photos, is "{pid}" really one volume, or several? Look for: a row of chapels or bays each with its own gable
+or roof along a side; a lower aisle and a higher clerestory; end pavilions or projecting bays; a tower's shaft,
+belfry stage and spire (stacked: base_z of each on top of the one below); a porch or portal block in front.
+If it is several, return the parts that REPLACE "{pid}": each with a new id and a short "name", its footprint on
+the plan of "{pid}" (stacked stages may be smaller), its base_z, height, roof, facade, material and features, in the
+same schema as the model. Together they must cover what "{pid}" covered. If it really is one volume, keep it.
+Reply with one JSON object: {{"parts": [...]}} or {{"keep": true}}"""
+
 AUDIT_PROMPT = """Landmark: {name}. Each attached image is a reference photo ({photos}) with the current 3D model of
 the building drawn over it (half transparent, cyan outline), seen from the photo's viewpoint and scaled into the
 building's frame. The model's volumes so far: {inventory}. Parts: {parts}.

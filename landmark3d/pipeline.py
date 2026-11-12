@@ -856,6 +856,112 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
         massing, audit = volume_audit(prj, provider, massing, photos, frames, check, main, base_materials, st,
                                       out_root)
         log.append(audit)
+        massing, sub_log = subdivide(prj, provider, massing, photos, frames, check, main, base_materials, st,
+                                     out_root, set_inventory)
+        log += sub_log
+    return massing, log
+
+
+SUBDIVIDE_MAX = 6            # parts looked at one by one
+SUBDIVIDE_MIN_AREA = 60.0    # m2 of plan, or
+SUBDIVIDE_MIN_HEIGHT = 20.0  # m of wall: smaller parts are left as they are
+CHILD_INSIDE = 0.85          # a sub-volume stands this much on its parent's plan
+
+
+def _inside_share(child: dict, parent_ring, main) -> float:
+    try:
+        ring = geom.footprint_polygon(child["footprint"], main)
+    except Exception:
+        return 0.0
+    xs = [x for x, _ in ring]
+    ys = [y for _, y in ring]
+    pts = [(min(xs) + (max(xs) - min(xs)) * (i + 0.5) / 8, min(ys) + (max(ys) - min(ys)) * (j + 0.5) / 8)
+           for i in range(8) for j in range(8)]
+    pts = [q for q in pts if geom.point_in_polygon(q, ring)]
+    return sum(geom.inside_with_tol(q, parent_ring, 0.5) for q in pts) / max(1, len(pts))
+
+
+def subdivide(prj: Project, provider, massing: dict, photos: list, frames: dict, check, main, base_materials: dict,
+              st: dict, out_root: Path, set_inventory=None):
+    """Large parts, one at a time: the AI says which sub-volumes the photos show inside it (chapels with their own
+    gables along an aisle, a tower's shaft, belfry and spire, a wing's pavilions) and returns them as parts that
+    replace it, each standing on the parent's plan. Asked about one volume at a time the AI gives the detail it
+    leaves out when it models the whole building at once. Checked like any massing answer; a failed answer keeps
+    the part. Returns (massing, log entries)."""
+    from . import inventory as inventory_mod
+    main = [tuple(p) for p in main]
+    log = []
+    sheets = _overlay_sheets(prj, massing, photos, frames, main, base_materials, st, out_root / "subdivide")
+    if not sheets:
+        return massing, log
+
+    def size(p):
+        try:
+            return geom.area(geom.footprint_polygon(p["footprint"], main))
+        except Exception:
+            return 0.0
+    targets = [p for p in massing["parts"] if p.get("enabled", True) is not False
+               and (size(p) >= SUBDIVIDE_MIN_AREA or float(p.get("height", 0)) >= SUBDIVIDE_MIN_HEIGHT)]
+    targets.sort(key=lambda p: -size(p) * float(p.get("height", 0)))
+    for part in targets[:SUBDIVIDE_MAX]:
+        pid = part["id"]
+        entry = {"step": "subdivide", "round": pid}
+        try:
+            parent_ring = geom.footprint_polygon(part["footprint"], main)
+        except Exception:
+            continue
+        others = [q["id"] for q in massing["parts"] if q["id"] != pid]
+        prompt = agent.SUBDIVIDE_PROMPT.format(name=st["name"], part=json.dumps(part, ensure_ascii=False), pid=pid,
+                                               others=", ".join(others))
+        old_vols = massing.get("volumes") or []
+
+        def merged(o):
+            kids = [dict(k) for k in o.get("parts") or [] if isinstance(k, dict)]
+            vols = [{"name": k.get("name") or k.get("id"), "part": k.get("id")} for k in kids if k.get("id")]
+            kids = [{kk: vv for kk, vv in k.items() if kk != "name"} for k in kids]       # the name is the volume's
+            return dict(massing, parts=[q for q in massing["parts"] if q["id"] != pid] + kids,
+                        volumes=[v for v in old_vols if v.get("part") != pid] + vols)
+
+        def sub_check(o):
+            if o.get("keep") is True:
+                return []
+            kids = [k for k in o.get("parts") or [] if isinstance(k, dict)]
+            if len(kids) < 2:
+                return ['give at least two sub-volume parts, or {"keep": true}']
+            errs = []
+            for k in kids:
+                if not k.get("id") or k["id"] in others:
+                    errs.append(f'sub-volume ids must be new (not {", ".join(others[:6])}...): {k.get("id")}')
+                elif float(k.get("base_z", 0)) < 0.5 and _inside_share(k, parent_ring, main) < CHILD_INSIDE:
+                    errs.append(f'"{k["id"]}" must stand on the plan of "{pid}" (it goes outside it)')
+            if errs:
+                return errs
+            m = merged(o)
+            if set_inventory is not None:
+                set_inventory(dict(m))
+            return check(m)
+        try:
+            obj, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=sub_check,
+                                 images=[p for _, p in sheets], retries=2, repair=repair_answer)
+        except Exception as exc:
+            if set_inventory is not None:
+                set_inventory(dict(massing))
+            entry["result"] = f"kept {pid}: {exc}"[:200]
+            log.append(entry)
+            continue
+        if obj.get("keep") is True:
+            if set_inventory is not None:
+                set_inventory(dict(massing))
+            entry["result"] = f"kept {pid} as one volume"
+            log.append(entry)
+            continue
+        massing = merged(obj)
+        if set_inventory is not None:
+            set_inventory(massing)
+        kids = [k["id"] for k in obj["parts"]]
+        entry.update({"verdict": f"{pid} split into {len(kids)}", "differences": kids[:12]})
+        prj.log("subdivided", {"part": pid, "into": kids})
+        log.append(entry)
     return massing, log
 
 

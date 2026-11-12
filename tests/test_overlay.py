@@ -191,3 +191,52 @@ def test_photo_review_keeps_the_draft_that_fits_the_photos_best(tmp_path, monkey
     assert seen == {"n": 3, "frames": {1: view["frame"]}}
     assert out["parts"] == [{"id": "d2"}] and chosen and chosen[0]["parts"] == [{"id": "d2"}]
     assert any(e.get("step") == "drafts" and "draft 2" in e["verdict"] for e in log)
+
+
+def test_subdivide_replaces_a_part_by_its_sub_volumes_on_its_plan(tmp_path, monkeypatch):
+    import importlib
+    import json
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.engine import runner
+    from landmark3d.project import Project
+    from landmark3d.research import ai
+    prj = Project.create("Split Hall", "X", lat=1.0, lon=2.0)
+    photo = tmp_path / "p.jpg"
+    Image.new("RGB", (800, 600), (200, 200, 200)).save(photo)
+
+    def fake_preview(p, spec, views, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        render_img().save(out_dir / "photo1.png")
+        return [out_dir / "photo1.png"]
+    monkeypatch.setattr(runner, "preview", fake_preview)
+    aisle = {"id": "aisle", "footprint": {"rect": {"cx": 0, "cy": 0, "w": 30, "d": 6}}, "base_z": 0, "height": 8,
+             "roof": {"type": "shed", "height": 2}}
+    tower = {"id": "tower", "footprint": {"rect": {"cx": 20, "cy": 0, "w": 6, "d": 6}}, "base_z": 0, "height": 30,
+             "roof": {"type": "flat"}}
+    chapel = lambda k, cx: {"id": f"chapel_{k}", "name": f"chapel {k}", "base_z": 0, "height": 8,
+                            "footprint": {"rect": {"cx": cx, "cy": 0, "w": 9.8, "d": 6}}, "roof": {"type": "gable",
+                                                                                                  "height": 3}}
+    stray = dict(chapel(9, 0), id="stray", footprint={"rect": {"cx": 0, "cy": 20, "w": 9.8, "d": 6}})
+    replies = [{"parts": [chapel(1, -10), stray]},                                  # off the parent's plan: no
+               {"parts": [chapel(1, -10), chapel(2, 0), chapel(3, 10)]},
+               {"keep": True}]                                                    # the tower stays one volume
+    prompts = []
+
+    class Fake(ai.Provider):
+        def chat(self, system, prompt, **k):
+            prompts.append(prompt)
+            return ai.AIResult(json.dumps(replies.pop(0)), "fake", "m", [])
+    massing = {"parts": [aisle, tower], "volumes": [{"name": "aisle", "part": "aisle"}, {"name": "tower", "part": "tower"}],
+               "views": [{"photo": 1, "azimuth_deg": 270, "elevation_deg": 8}]}
+    out, log = pipeline.subdivide(prj, Fake("m"), massing, [photo], {1: [0.1, 0.1, 0.9, 0.9]}, lambda o: [],
+                                  [[-40, -20], [40, -20], [40, 20], [-40, 20]], {}, prj.state(),
+                                  prj.root / "reports" / "photo_review")
+    ids = [p["id"] for p in out["parts"]]
+    assert ids == ["tower", "chapel_1", "chapel_2", "chapel_3"] and "stray" in prompts[1] or "plan of" in prompts[1]
+    assert {v["name"] for v in out["volumes"]} == {"tower", "chapel 1", "chapel 2", "chapel 3"}
+    assert all("name" not in p for p in out["parts"])
+    assert [e.get("verdict") or e.get("result") for e in log] == ["aisle split into 3", "kept tower as one volume"]
