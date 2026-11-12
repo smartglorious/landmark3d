@@ -980,7 +980,7 @@ def _overlay_sheets(prj: Project, massing: dict, photos: list, frames: dict, mai
             n = int(v.get("photo", 0))
         except (TypeError, ValueError):
             continue
-        if frames.get(n) and 1 <= n <= len(photos) and not v.get("focus"):
+        if frames.get(n) and 1 <= n <= len(photos) and v.get("focus") in (None, "", "whole"):
             views[f"photo{n}"] = cam_of(v, massing["parts"])
     if not views:
         return []

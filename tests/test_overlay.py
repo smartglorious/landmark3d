@@ -240,3 +240,33 @@ def test_subdivide_replaces_a_part_by_its_sub_volumes_on_its_plan(tmp_path, monk
     assert {v["name"] for v in out["volumes"]} == {"tower", "chapel 1", "chapel 2", "chapel 3"}
     assert all("name" not in p for p in out["parts"])
     assert [e.get("verdict") or e.get("result") for e in log] == ["aisle split into 3", "kept tower as one volume"]
+
+
+def test_overlay_sheets_count_views_marked_whole(tmp_path, monkeypatch):
+    """Review answers mark full views "focus": "whole"; only close-ups (a part id) are left out of the overlays."""
+    import importlib
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.engine import runner
+    from landmark3d.project import Project
+    prj = Project.create("Whole Hall", "X", lat=1.0, lon=2.0)
+    photo = tmp_path / "p.jpg"
+    Image.new("RGB", (800, 600), (200, 200, 200)).save(photo)
+
+    def fake_preview(p, spec, views, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = []
+        for name in views:
+            render_img().save(out_dir / f"{name}.png")
+            out.append(out_dir / f"{name}.png")
+        return out
+    monkeypatch.setattr(runner, "preview", fake_preview)
+    m = {"parts": [{"id": "hall", "footprint": "main", "base_z": 0, "height": 10}], "materials": {},
+         "views": [{"photo": 1, "azimuth_deg": 0, "elevation_deg": 8, "focus": "whole"},
+                   {"photo": 2, "azimuth_deg": 90, "elevation_deg": 8, "focus": "hall"}]}
+    out = pipeline._overlay_sheets(prj, m, [photo, photo], {1: [0.1, 0.1, 0.9, 0.9], 2: [0.1, 0.1, 0.9, 0.9]},
+                                   [[-10, -10], [10, -10], [10, 10], [-10, 10]], {}, prj.state(), tmp_path / "o")
+    assert [n for n, _ in out] == [1]
