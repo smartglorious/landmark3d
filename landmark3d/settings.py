@@ -11,8 +11,8 @@ APP_HOME = Path(os.environ.get("LANDMARK3D_HOME") or Path.home() / ".landmark3d"
 SETTINGS_FILE = APP_HOME / "settings.json"
 
 DEFAULT_BUDGETS = {
-    "triangles_max": 50000,
-    "triangles_target": 40000,
+    "triangles_max": 75000,       # raised 50 % on 2026-11-12 (owner): more volumes from the inventory need room
+    "triangles_target": 60000,
     "bytes_max": 5_000_000,
     "bytes_target": 4_500_000,
     "materials_max": 10,

@@ -174,9 +174,13 @@ was: "street" (normal street-level photo), "raised" (from an upper floor / sligh
 And say what the photo is framed on: "whole" when it shows most of the building, or the id of the ONE part a
 close-up centres on (e.g. a photo of just the clock tower or the main portal), so that part is rendered up close.
 Parts of the model: {parts}.
+Also give the FRAME of the building in each photo: [left, top, right, bottom] as fractions of the photo's width and
+height (0 = left / top edge, 1 = right / bottom edge), from the building's leftmost to rightmost visible point and
+from its highest point (spire or cross tip) to where its walls meet the ground. Measure carefully: the model is
+drawn into this frame over the photo to compare the volumes.
 Reply with one JSON object:
 {{"matches": [{{"photo": 1, "label": "A".."H", "elevation": "street|raised|aerial", "subject": "whole|<part id>",
-  "why": "..."}}, ...]}}"""
+  "frame": [left, top, right, bottom], "why": "..."}}, ...]}}"""
 
 TRIAGE_PROMPT = """Landmark: {name} ({location}). The attached contact sheet shows {n} candidate reference photos,
 numbered 1 .. {n}. They will be used to model the building's CURRENT exterior massing (volumes, roofs, facades).
@@ -271,8 +275,11 @@ REVIEW_PROMPT = """You produced this massing model of {name} ({location}):
 Site outline (local metres): {footprint}
 Outline edge directions: {directions}
 
-Each attached image shows a reference PHOTO on the left and a render of YOUR MODEL on the right, from about the
-same viewpoint (images in the same order as the views you gave).{satellite_note} Compare them carefully, volume by volume:
+Each attached image shows a reference PHOTO on the left and a render of YOUR MODEL in the middle, from about the
+same viewpoint (images in the same order as the views you gave). Where a third panel OVERLAY is present, the model is
+scaled into the building's frame and drawn over the photo with a cyan outline: where the real building sticks out of
+the cyan outline a volume is missing or too low / narrow; where the outline encloses sky or street a volume is too
+large or misplaced. Go through the overlay volume by volume (each roof line, gable, tower, apse, wing).{satellite_note} Compare them carefully, volume by volume:
 plan shapes (rounded vs sharp), which street each volume is parallel to, relative positions and setbacks,
 heights and storey counts, undercuts / overhangs, the roofs (number of roof tiers / skirts, raised clerestory or
 upper walls between them, projecting eaves, upturned corners, real domes vs pointed pavilion roofs), the facade

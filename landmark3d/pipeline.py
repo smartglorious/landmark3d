@@ -406,19 +406,33 @@ def build_spec(prj: Project) -> dict:
     return spec
 
 
-def _side_by_side(photo: Path, render: Path, out: Path, label: str) -> Path:
+def _side_by_side(photo: Path, render: Path, out: Path, label: str, frame=None) -> Path:
+    """PHOTO | MODEL, and with the building's frame in the photo a third panel OVERLAY: the model scaled into that
+    frame and drawn over the photo (cyan outline), so missing and oversized volumes show where they are."""
     from PIL import Image, ImageDraw
+    from . import overlay
     a = Image.open(photo).convert("RGB")
     b = Image.open(render).convert("RGB")
+    c = None
+    if frame is not None and overlay.valid_frame(frame):
+        try:
+            c = overlay.compose(a, b, frame)
+        except ValueError:
+            c = None
     h = 640
     a = a.resize((max(1, int(a.width * h / a.height)), h))
     b = b.resize((max(1, int(b.width * h / b.height)), h))
-    sheet = Image.new("RGB", (a.width + b.width + 12, h + 34), "white")
+    if c is not None:
+        c = c.resize((max(1, int(c.width * h / c.height)), h))
+    sheet = Image.new("RGB", (a.width + b.width + 12 + ((c.width + 12) if c else 0), h + 34), "white")
     sheet.paste(a, (0, 34))
     sheet.paste(b, (a.width + 12, 34))
     d = ImageDraw.Draw(sheet)
     d.text((8, 10), f"PHOTO ({label})", fill="black")
     d.text((a.width + 20, 10), "MODEL (same viewpoint)", fill="black")
+    if c is not None:
+        sheet.paste(c, (a.width + b.width + 24, 34))
+        d.text((a.width + b.width + 32, 10), "OVERLAY: model (cyan outline) drawn over the photo", fill="black")
     sheet.thumbnail((1800, 1800))
     sheet.save(out, "JPEG", quality=85)
     return out
@@ -573,6 +587,9 @@ def match_viewpoints(prj: Project, provider, massing: dict, photos: list, main, 
             lab = str(m["label"]).upper()
             ent = {"photo": n, "azimuth_deg": round(cand_az[lab], 1),
                    "elevation_deg": ELEVATIONS.get(str(m.get("elevation", "street")), 8.0), "label": lab}
+            from . import overlay
+            if overlay.valid_frame(m.get("frame")):
+                ent["frame"] = [round(float(v), 3) for v in m["frame"]]
             subject = str(m.get("subject") or "whole")
             if subject != "whole" and any(p.get("id") == subject for p in massing["parts"]):
                 ent["focus"] = subject                    # a close-up: frame that part, not the whole building
@@ -608,6 +625,7 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
     for r in range(1, rounds + 1):
         views = {}
         pairs = []
+        frames = {f"photo{m['photo']}": m.get("frame") for m in matched or [] if m.get("frame")}
         for v in (massing.get("views") or [])[:4]:
             try:
                 idx = int(v.get("photo", 0)) - 1
@@ -630,7 +648,7 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
             from .research import satellite
             views["satplan"] = {"ortho_extent": list(satellite.EXTENT_M)}
         renders = {p.stem: p for p in engine_runner.preview(prj, cand, views, rdir)}
-        sheets = [_side_by_side(ph, renders[name], out_root / f"round{r}_{name}.jpg", name)
+        sheets = [_side_by_side(ph, renders[name], out_root / f"round{r}_{name}.jpg", name, frames.get(name))
                   for ph, name in pairs if name in renders]
         if sat is not None and "satplan" in renders:
             sheets.append(_side_by_side(sat, renders["satplan"], out_root / f"round{r}_satplan.jpg", "satellite"))
