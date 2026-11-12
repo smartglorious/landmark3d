@@ -249,15 +249,31 @@ def build_spec(prj: Project) -> dict:
                 ai_notes_extra = [f"AI could not fix: {e}" for e in res.validation_errors[:6]]
             else:
                 ai_notes_extra = []
-            ids = {p.get("id") for p in massing.get("parts", [])}
-            inv["list"] = [v for v in massing.get("volumes") or [] if isinstance(v, dict) and v.get("part") in ids]
-            massing["volumes"] = inv["list"]
-            prj.log("volume inventory", {"volumes": len(inv["list"]), "parts": len(massing.get("parts", []))})
+            def set_inventory(m):
+                ids = {p.get("id") for p in m.get("parts", [])}
+                inv["list"] = [v for v in m.get("volumes") or [] if isinstance(v, dict) and v.get("part") in ids]
+                m["volumes"] = inv["list"]
+                prj.log("volume inventory", {"volumes": len(inv["list"]), "parts": len(m.get("parts", []))})
+            # The massing AI decomposes the building differently on every run (Đức Bà: 7 to 14 volumes), so a few
+            # independent drafts are made and the one that fits the photos best (drawn over them) is kept.
+            drafts = [massing]
+            for k in range(2, int(settings_mod.load().get("massing_drafts", 3) or 1) + 1):
+                try:
+                    d_, r_ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt + DRAFT_NOTE.format(k=k),
+                                         validator=massing_check, images=photos + sat_imgs, retries=2,
+                                         accept_invalid=True, repair=repair_answer)
+                    if not getattr(r_, "validation_errors", None):
+                        drafts.append(d_)
+                except Exception as exc:
+                    prj.log("massing draft failed", {"draft": k, "error": str(exc)[:200]})
+            set_inventory(massing)
             normalise_glass(massing)
             rounds = int(settings_mod.load().get("photo_review_rounds", 2) or 0)
             if rounds > 0 and photos:
+                for d_ in drafts[1:]:
+                    normalise_glass(d_)
                 massing, review_log = photo_review(prj, provider, massing, photos, massing_check, main, materials,
-                                                   st, rounds, sat_imgs)
+                                                   st, rounds, sat_imgs, drafts=drafts, set_inventory=set_inventory)
                 normalise_glass(massing)
             # The AI reads positions and sizes off a satellite image; its plan is fitted to the measured footprint
             # (whole model, then each ground volume), kept only where plan IoU improves without new structure errors
@@ -688,8 +704,12 @@ def refine_azimuths(prj: Project, provider, cand: dict, photos: list, views: lis
     return out
 
 
+DRAFT_NOTE = ("\n\nThis is independent draft {k}: build the model again from the photos and the satellite view on your "
+              "own judgement (count and place the volumes afresh); do not aim to repeat an earlier answer.")
+
+
 def photo_review(prj: Project, provider, massing: dict, photos: list, check, main, base_materials: dict, st: dict,
-                 rounds: int, sat_imgs: list | None = None):
+                 rounds: int, sat_imgs: list | None = None, drafts: list | None = None, set_inventory=None):
     """Render the candidate model from each photo's viewpoint, show the AI photo | render pairs, let it revise.
 
     Stops at the first "match", when the AI cannot produce a valid revision, or after `rounds` rounds.
@@ -707,6 +727,19 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
     log.append(entry0)
     if matched:
         massing = dict(massing, views=matched)
+    frames0 = {int(m["photo"]): m["frame"] for m in matched or [] if m.get("frame")}
+    if drafts and len(drafts) > 1 and frames0:
+        # the drafts are compared drawn over every photo (same views, the first draft's matching), before any revision
+        ddir = out_root / "drafts"
+        ddir.mkdir(parents=True, exist_ok=True)
+        chosen, pick = select_best(prj, provider, [dict(d, views=matched) for d in drafts], photos, sat, main,
+                                   base_materials, st, ddir, frames0)
+        pick["step"] = "drafts"
+        pick["verdict"] = (pick.get("verdict") or "").replace("candidate", "draft")
+        log.append(pick)
+        massing = chosen
+        if set_inventory is not None:
+            set_inventory(massing)
     candidates = [massing]
     for r in range(1, rounds + 1):
         views = {}

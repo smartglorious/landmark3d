@@ -164,3 +164,30 @@ def test_volume_audit_keeps_good_additions_and_drops_one_off_the_site(tmp_path, 
                                        [[-30, -30], [30, -30], [30, 30], [-30, 30]], {}, prj.state(),
                                        prj.root / "reports" / "photo_review")
     assert [p["id"] for p in out["parts"]] == ["hall", "chapel"] and entry["dropped"]
+
+
+def test_photo_review_keeps_the_draft_that_fits_the_photos_best(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.project import Project
+    prj = Project.create("Draft Hall", "X", lat=1.0, lon=2.0)
+    view = {"photo": 1, "azimuth_deg": 270.0, "elevation_deg": 8.0, "frame": [0.1, 0.1, 0.9, 0.9]}
+    monkeypatch.setattr(pipeline, "match_viewpoints", lambda *a, **k: ([view], {"step": "viewpoints"}))
+    seen = {}
+
+    def fake_select(p, pr, cands, photos, sat, main, mats, st, out_root, frames=None):
+        seen["n"], seen["frames"] = len(cands), frames
+        return cands[1], {"step": "select", "verdict": "chose candidate 2 of 3"}
+    monkeypatch.setattr(pipeline, "select_best", fake_select)
+    monkeypatch.setattr(pipeline, "volume_audit", lambda p, pr, m, *a, **k: (m, {"step": "audit"}))
+    drafts = [{"parts": [{"id": f"d{k}"}], "volumes": [{"name": f"v{k}", "part": f"d{k}"}]} for k in (1, 2, 3)]
+    chosen = []
+    out, log = pipeline.photo_review(prj, None, drafts[0], [tmp_path / "p.jpg"], lambda o: [], [[0, 0], [1, 0], [1, 1]],
+                                     {}, prj.state(), 0, drafts=drafts, set_inventory=chosen.append)
+    assert seen == {"n": 3, "frames": {1: view["frame"]}}
+    assert out["parts"] == [{"id": "d2"}] and chosen and chosen[0]["parts"] == [{"id": "d2"}]
+    assert any(e.get("step") == "drafts" and "draft 2" in e["verdict"] for e in log)
