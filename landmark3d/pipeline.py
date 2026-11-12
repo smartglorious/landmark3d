@@ -897,24 +897,40 @@ def volume_audit(prj: Project, provider, massing: dict, photos: list, frames: di
         missing="\n".join(f"- {m['name']}: {m.get('where', '')} (photos {m.get('seen_in', '')})" for m in missing))
     prompt2 += agent.user_directive(st)
 
+    dropped: list = []
+
+    def tool_fix(o):
+        """The tool drops new parts that repeat an existing one or stand off the site, and their volumes (noted),
+        instead of rejecting the whole answer for one bad addition."""
+        o = repair_answer(o)
+        if not isinstance(o, dict) or not isinstance(o.get("parts"), list):
+            return o
+        bad = set()
+        for msg in (inventory_mod.duplicate_errors(o["parts"], old_ids, main)
+                    + inventory_mod.outside_errors(o["parts"], old_ids, main)):
+            pid = msg.split('"')[1]
+            bad.add(pid)
+            dropped.append(msg.split(":")[0])
+        if not bad:
+            return o
+        return dict(o, parts=[q for q in o["parts"] if q.get("id") not in bad],
+                    volumes=[v for v in o.get("volumes") or [] if isinstance(v, dict) and v.get("part") not in bad])
+
     def revise_check(o):
-        errs = check(o) + inventory_mod.duplicate_errors(o.get("parts"), old_ids, main)
-        errs += inventory_mod.outside_errors(o.get("parts"), old_ids, main)
+        errs = check(o)
         vols = {v.get("name"): v.get("part") for v in o.get("volumes") or [] if isinstance(v, dict)}
-        ids = {p.get("id") for p in o.get("parts") or [] if isinstance(p, dict)}
-        for n in names:
-            pid = vols.get(n)
-            if pid is None:
-                errs.append(f'the missing volume "{n}" must be in "volumes" (same name) with its own part')
-            elif pid not in ids or pid in old_ids:
-                errs.append(f'volume "{n}" needs a NEW part (not one of the existing parts), present in "parts"')
+        ids = {q.get("id") for q in o.get("parts") or [] if isinstance(q, dict)}
+        errs += [f'volume "{n}" needs a NEW part of its own, present in "parts"' for n, pid in vols.items()
+                 if n in names and pid is not None and (pid not in ids or pid in old_ids)]
         return errs
     try:
         obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt2, validator=revise_check,
-                               images=[p for _, p in sheets], retries=2, repair=repair_answer)
+                               images=[p for _, p in sheets], retries=2, repair=tool_fix)
     except Exception as exc:
         entry["result"] = f"adding the missing volumes failed, kept the model: {exc}"[:300]
         return massing, entry
+    if dropped:
+        entry["dropped"] = sorted(set(dropped))[:12]
     obj["views"] = massing.get("views")
     obj["volumes"] = inventory_mod.merged(massing.get("volumes"), obj)
     added = sorted({p["id"] for p in obj["parts"]} - old_ids)
