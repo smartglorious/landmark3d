@@ -899,6 +899,7 @@ def volume_audit(prj: Project, provider, massing: dict, photos: list, frames: di
 
     def revise_check(o):
         errs = check(o) + inventory_mod.duplicate_errors(o.get("parts"), old_ids, main)
+        errs += inventory_mod.outside_errors(o.get("parts"), old_ids, main)
         vols = {v.get("name"): v.get("part") for v in o.get("volumes") or [] if isinstance(v, dict)}
         ids = {p.get("id") for p in o.get("parts") or [] if isinstance(p, dict)}
         for n in names:

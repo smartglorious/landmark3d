@@ -36,3 +36,11 @@ def test_a_new_part_repeating_an_existing_one_is_a_duplicate():
     assert len(errs) == 1 and "tower_body" in errs[0]
     belfry = dict(body, id="belfry", base_z=40, height=6)                       # on top of it: a new volume
     assert inventory.duplicate_errors([tower, belfry], {"tower"}, main) == []
+
+
+def test_a_new_part_off_the_site_outline_is_rejected():
+    main = [[-20, -10], [20, -10], [20, 10], [-20, 10]]
+    inside = {"id": "chapel", "footprint": {"rect": {"cx": 10, "cy": 0, "w": 6, "d": 6}}, "base_z": 0, "height": 8}
+    outside = {"id": "tower3", "footprint": {"rect": {"cx": 35, "cy": 0, "w": 8, "d": 8}}, "base_z": 0, "height": 40}
+    errs = inventory.outside_errors([inside, outside], set(), main)
+    assert len(errs) == 1 and "tower3" in errs[0]

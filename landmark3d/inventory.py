@@ -104,5 +104,32 @@ def duplicate_errors(parts, old_ids: set, main) -> list[str]:
     return errs
 
 
+INSIDE_MIN = 0.7            # a volume added from the overlays must stand mostly on the measured site outline
+
+
+def outside_errors(parts, old_ids: set, main) -> list[str]:
+    """New parts standing mostly off the site outline (OSM): the overlays are only scaled into a frame, so a volume
+    read off them can land metres away; the footprint is the measured truth."""
+    from . import geom
+    main = [tuple(p) for p in main]
+    errs = []
+    for p in parts or []:
+        if p.get("id") in old_ids or float(p.get("base_z", 0)) > 0.5:
+            continue
+        try:
+            ring = geom.footprint_polygon(p["footprint"], main)
+        except Exception:
+            continue
+        xs = [x for x, _ in ring]
+        ys = [y for _, y in ring]
+        pts = [(min(xs) + (max(xs) - min(xs)) * (i + 0.5) / 8, min(ys) + (max(ys) - min(ys)) * (j + 0.5) / 8)
+               for i in range(8) for j in range(8)]
+        pts = [q for q in pts if geom.point_in_polygon(q, ring)]
+        if pts and sum(geom.inside_with_tol(q, main, 1.0) for q in pts) / len(pts) < INSIDE_MIN:
+            errs.append(f'new part "{p["id"]}" stands mostly outside the site outline: a missing volume is inside '
+                        f'the building footprint - place it there, or it is not a missing volume')
+    return errs
+
+
 def text(inventory: list) -> str:
     return "; ".join(f'{v.get("name")} = {v.get("part")}' for v in inventory or [] if isinstance(v, dict))
