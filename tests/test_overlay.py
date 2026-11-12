@@ -270,3 +270,19 @@ def test_overlay_sheets_count_views_marked_whole(tmp_path, monkeypatch):
     out = pipeline._overlay_sheets(prj, m, [photo, photo], {1: [0.1, 0.1, 0.9, 0.9], 2: [0.1, 0.1, 0.9, 0.9]},
                                    [[-10, -10], [10, -10], [10, 10], [-10, 10]], {}, prj.state(), tmp_path / "o")
     assert [n for n, _ in out] == [1]
+
+
+def test_a_split_is_repeated_on_the_twin_part():
+    from landmark3d import pipeline
+    t1 = {"id": "tower_1", "footprint": {"rect": {"cx": -10, "cy": 0, "w": 8, "d": 8, "rot_deg": 0}}, "base_z": 0,
+          "height": 40, "roof": {"type": "spire"}}
+    t2 = dict(t1, id="tower_2", footprint={"rect": {"cx": 10, "cy": 0, "w": 8, "d": 8, "rot_deg": 90}})
+    nave = dict(t1, id="nave", footprint={"rect": {"cx": 0, "cy": 20, "w": 30, "d": 12}}, height=20)
+    assert [q["id"] for q in pipeline.twins_of(t1, [t1, t2, nave])] == ["tower_2"]
+    kids = [{"id": "shaft", "name": "shaft", "footprint": {"rect": {"cx": -10, "cy": 1, "w": 8, "d": 6}},
+             "base_z": 0, "height": 32},
+            {"id": "belfry", "footprint": {"rect": {"cx": -10, "cy": 0, "w": 7, "d": 7}}, "base_z": 32, "height": 8}]
+    out = pipeline.map_children(kids, t1, t2, "__tower_2")
+    r = out[0]["footprint"]["rect"]
+    assert out[0]["id"] == "shaft__tower_2" and (round(r["cx"], 3), round(r["cy"], 3)) == (9.0, 0.0)
+    assert r["rot_deg"] == 90 and out[1]["base_z"] == 32 and "tower_2" in out[0]["name"]

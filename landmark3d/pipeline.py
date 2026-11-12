@@ -881,6 +881,72 @@ def _inside_share(child: dict, parent_ring, main) -> float:
     return sum(geom.inside_with_tol(q, parent_ring, 0.5) for q in pts) / max(1, len(pts))
 
 
+TWIN_TOL = 0.1              # twins: same roof, height and plan size within this share
+
+
+def _rect_frame(part):
+    """(cx, cy, rot_deg, w, d) of a rect-like footprint, else None."""
+    fp = part.get("footprint")
+    for k in ("rect", "rounded_rect", "stadium"):
+        if isinstance(fp, dict) and k in fp:
+            r = fp[k]
+            return float(r["cx"]), float(r["cy"]), float(r.get("rot_deg", 0.0)), float(r["w"]), float(r["d"])
+    return None
+
+
+def twins_of(part: dict, parts: list) -> list:
+    """Parts that are copies of `part` placed elsewhere (two towers, two aisles): rect plans of the same size, the same
+    roof type, base and height within TWIN_TOL."""
+    a = _rect_frame(part)
+    if a is None:
+        return []
+    out = []
+    for q in parts:
+        b = _rect_frame(q)
+        if q is part or q.get("id") == part.get("id") or b is None:
+            continue
+        same = lambda x, y: abs(x - y) <= TWIN_TOL * max(abs(x), abs(y), 1e-6)
+        dims = (same(a[3], b[3]) and same(a[4], b[4])) or (same(a[3], b[4]) and same(a[4], b[3]))
+        if dims and same(float(part["height"]), float(q["height"])) and \
+                abs(float(part.get("base_z", 0)) - float(q.get("base_z", 0))) < 0.5 and \
+                (part.get("roof") or {}).get("type") == (q.get("roof") or {}).get("type"):
+            out.append(q)
+    return out
+
+
+def map_children(kids: list, parent: dict, twin: dict, suffix: str) -> list:
+    """The parent's sub-volumes placed on its twin: each child's plan offset is kept in the parent's own axes and
+    turned onto the twin's (heights and everything else copied)."""
+    import copy
+    import math as _m
+    pa, ta = _rect_frame(parent), _rect_frame(twin)
+    da = _m.radians(ta[2] - pa[2])
+
+    def move(x, y):
+        dx, dy = x - pa[0], y - pa[1]
+        return (ta[0] + dx * _m.cos(da) - dy * _m.sin(da), ta[1] + dx * _m.sin(da) + dy * _m.cos(da))
+    out = []
+    for k in kids:
+        c = copy.deepcopy(k)
+        c["id"] = f"{k['id']}{suffix}"
+        if c.get("name"):
+            c["name"] = f"{k['name']} ({twin['id']})"
+        fp = c.get("footprint")
+        if isinstance(fp, dict):
+            for key in ("rect", "rounded_rect", "stadium", "circle", "ngon"):
+                if key in fp:
+                    fp[key]["cx"], fp[key]["cy"] = [round(v, 3) for v in move(float(fp[key]["cx"]), float(fp[key]["cy"]))]
+                    if "rot_deg" in fp[key] or key != "circle":
+                        fp[key]["rot_deg"] = round((float(fp[key].get("rot_deg", 0.0)) + ta[2] - pa[2]) % 360, 3)
+            if "polygon" in fp:
+                fp["polygon"] = [[round(v, 3) for v in move(float(x), float(y))] for x, y in fp["polygon"]]
+        for ft in c.get("features") or []:
+            if ft.get("x") is not None and ft.get("y") is not None:
+                ft["x"], ft["y"] = [round(v, 3) for v in move(float(ft["x"]), float(ft["y"]))]
+        out.append(c)
+    return out
+
+
 def subdivide(prj: Project, provider, massing: dict, photos: list, frames: dict, check, main, base_materials: dict,
               st: dict, out_root: Path, set_inventory=None):
     """Large parts, one at a time: the AI says which sub-volumes the photos show inside it (chapels with their own
@@ -905,6 +971,8 @@ def subdivide(prj: Project, provider, massing: dict, photos: list, frames: dict,
     targets.sort(key=lambda p: -size(p) * float(p.get("height", 0)))
     for part in targets[:SUBDIVIDE_MAX]:
         pid = part["id"]
+        if pid not in {q["id"] for q in massing["parts"]}:      # already split as a twin of an earlier part
+            continue
         entry = {"step": "subdivide", "round": pid}
         try:
             parent_ring = geom.footprint_polygon(part["footprint"], main)
@@ -955,6 +1023,7 @@ def subdivide(prj: Project, provider, massing: dict, photos: list, frames: dict,
             entry["result"] = f"kept {pid} as one volume"
             log.append(entry)
             continue
+        twins = twins_of(part, massing["parts"])
         massing = merged(obj)
         if set_inventory is not None:
             set_inventory(massing)
@@ -962,6 +1031,26 @@ def subdivide(prj: Project, provider, massing: dict, photos: list, frames: dict,
         entry.update({"verdict": f"{pid} split into {len(kids)}", "differences": kids[:12]})
         prj.log("subdivided", {"part": pid, "into": kids})
         log.append(entry)
+        for t in twins:                                  # the same split on its copies (two towers, two aisles)
+            tid = t["id"]
+            if tid not in {q["id"] for q in massing["parts"]}:
+                continue
+            tk = map_children(obj["parts"], part, t, f"__{tid}")
+            cand = dict(massing, parts=[q for q in massing["parts"] if q["id"] != tid]
+                        + [{kk: vv for kk, vv in k.items() if kk != "name"} for k in tk],
+                        volumes=[v for v in massing.get("volumes") or [] if v.get("part") != tid]
+                        + [{"name": k.get("name") or k["id"], "part": k["id"]} for k in tk])
+            if set_inventory is not None:
+                set_inventory(dict(cand))
+            errs = check(cand)
+            if errs:
+                if set_inventory is not None:
+                    set_inventory(massing)
+                log.append({"step": "subdivide", "round": tid, "result": f"twin of {pid} kept: {errs[0]}"[:200]})
+                continue
+            massing = cand
+            log.append({"step": "subdivide", "round": tid, "verdict": f"{tid} split like its twin {pid}",
+                        "differences": [k["id"] for k in tk][:12]})
     return massing, log
 
 
