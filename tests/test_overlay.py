@@ -76,3 +76,50 @@ def test_azimuth_refinement_turns_a_view_to_the_picked_overlay(tmp_path, monkeyp
     out = pipeline.refine_azimuths(prj, Fake("m"), {}, [photo, photo], views, tmp_path, entry)
     assert out[0]["azimuth_deg"] == 105.0 and out[1]["azimuth_deg"] == 180.0
     assert entry["azimuth_refine"] == {"1": 15.0}
+
+
+def test_volume_audit_adds_a_new_part_for_each_missing_volume(tmp_path, monkeypatch):
+    import importlib
+    import json
+    monkeypatch.setenv("LANDMARK3D_HOME", str(tmp_path / "home"))
+    from landmark3d import settings
+    importlib.reload(settings)
+    settings.update({"projects_dir": str(tmp_path / "projects")})
+    from landmark3d import pipeline
+    from landmark3d.engine import runner
+    from landmark3d.project import Project
+    from landmark3d.research import ai
+    prj = Project.create("Audit Hall", "X", lat=1.0, lon=2.0)
+    photo = tmp_path / "p.jpg"
+    Image.new("RGB", (800, 600), (200, 200, 200)).save(photo)
+
+    def fake_preview(p, spec, views, out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = []
+        for name in views:
+            render_img().save(out_dir / f"{name}.png")
+            out.append(out_dir / f"{name}.png")
+        return out
+    monkeypatch.setattr(runner, "preview", fake_preview)
+    hall = {"id": "hall", "footprint": {"rect": {"cx": 0, "cy": 0, "w": 20, "d": 10}}, "base_z": 0, "height": 10,
+            "roof": {"type": "gable", "height": 4}}
+    chapel = {"id": "chapel", "footprint": {"rect": {"cx": 0, "cy": 7, "w": 6, "d": 4}}, "base_z": 0, "height": 5,
+              "roof": {"type": "hip", "height": 2}}
+    massing = {"parts": [hall], "materials": {}, "volumes": [{"name": "hall", "part": "hall"}],
+               "views": [{"photo": 1, "azimuth_deg": 270, "elevation_deg": 8}]}
+    replies = [{"missing": [{"name": "side chapel", "seen_in": [1], "where": "left, low"}]},
+               {"parts": [hall], "volumes": [{"name": "side chapel", "part": "hall"}]},          # reuses a part: no
+               {"parts": [hall, chapel], "materials": {}, "volumes": [{"name": "hall", "part": "hall"},
+                                                                       {"name": "side chapel", "part": "chapel"}]}]
+    seen = []
+
+    class Fake(ai.Provider):
+        def chat(self, system, prompt, **k):
+            seen.append(prompt)
+            return ai.AIResult(json.dumps(replies.pop(0)), "fake", "m", [])
+    out, entry = pipeline.volume_audit(prj, Fake("m"), massing, [photo], {1: [0.2, 0.1, 0.8, 0.9]}, lambda o: [],
+                                       [[-30, -30], [30, -30], [30, 30], [-30, 30]], {}, prj.state(),
+                                       prj.root / "reports" / "photo_review")
+    assert [p["id"] for p in out["parts"]] == ["hall", "chapel"] and "side chapel" in seen[1]
+    assert any("NEW part" in p for p in seen[2:]) and entry["verdict"] == "volumes added"
+    assert {v["name"] for v in out["volumes"]} == {"hall", "side chapel"}

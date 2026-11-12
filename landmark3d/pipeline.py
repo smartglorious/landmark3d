@@ -808,7 +808,118 @@ def photo_review(prj: Project, provider, massing: dict, photos: list, check, mai
         massing, pick = select_best(prj, provider, candidates, photos, sat, main, base_materials, st, out_root,
                                     {int(m["photo"]): m["frame"] for m in matched or [] if m.get("frame")})
         log.append(pick)
+    frames = {int(m["photo"]): m["frame"] for m in matched or [] if m.get("frame")}
+    if frames:
+        massing, audit = volume_audit(prj, provider, massing, photos, frames, check, main, base_materials, st,
+                                      out_root)
+        log.append(audit)
     return massing, log
+
+
+AUDIT_MAX = 12
+
+
+def _overlay_sheets(prj: Project, massing: dict, photos: list, frames: dict, main, base_materials: dict, st: dict,
+                    out_dir: Path) -> list:
+    """The model drawn over every framed photo from its matched view (one image per photo)."""
+    from PIL import Image
+    from . import overlay
+    from .engine import runner as engine_runner
+    views = {}
+    for v in massing.get("views") or []:
+        try:
+            n = int(v.get("photo", 0))
+        except (TypeError, ValueError):
+            continue
+        if frames.get(n) and 1 <= n <= len(photos) and not v.get("focus"):
+            views[f"photo{n}"] = cam_of(v, massing["parts"])
+    if not views:
+        return []
+    mats = {k: dict(v) for k, v in base_materials.items()}
+    mats.update(massing.get("materials") or {})
+    cand = {"footprint": {"local": [list(p) for p in main]}, "parts": massing["parts"], "materials": mats,
+            "budgets": st["budgets"]}
+    renders = {p.stem: p for p in engine_runner.preview(prj, cand, views, out_dir)}
+    out = []
+    for name, path in sorted(renders.items()):
+        n = int(name[5:])
+        try:
+            img = overlay.compose(Image.open(photos[n - 1]), Image.open(path).convert("RGB"), frames[n])
+        except (ValueError, OSError):
+            continue
+        dst = out_dir / f"overlay_photo{n}.jpg"
+        img.thumbnail((1400, 1400))
+        img.save(dst, "JPEG", quality=85)
+        out.append((n, dst))
+    return out
+
+
+def volume_audit(prj: Project, provider, massing: dict, photos: list, frames: dict, check, main,
+                 base_materials: dict, st: dict, out_root: Path):
+    """After the review rounds: one AI look at the model drawn over every photo lists the volumes of the real
+    building that the model does not have (where the building sticks out of the cyan outline); then the model is
+    revised to add a part for each, checked like any massing answer plus: every audited volume is in the inventory
+    with a NEW part. Fewer volumes means nowhere to put their details, and the review rounds tend to fix heights and
+    positions rather than add what is missing. Returns (massing, log entry); an answer that fails keeps the model."""
+    from . import inventory as inventory_mod
+    entry = {"step": "audit"}
+    sheets = _overlay_sheets(prj, massing, photos, frames, main, base_materials, st, out_root / "audit")
+    if not sheets:
+        entry["result"] = "no overlay could be drawn; audit skipped"
+        return massing, entry
+    entry["images"] = [p.relative_to(prj.root).as_posix() for _, p in sheets]
+    prompt = agent.AUDIT_PROMPT.format(name=st["name"], photos=", ".join(f"photo {n}" for n, _ in sheets),
+                                       inventory=inventory_mod.text(massing.get("volumes")) or "none",
+                                       parts=", ".join(p["id"] for p in massing["parts"]), most=AUDIT_MAX)
+
+    def audit_check(o):
+        ms = o.get("missing")
+        if not isinstance(ms, list):
+            return ['give "missing": [...] (an empty list when nothing is missing)']
+        return [f"each missing volume needs a name: {str(m)[:60]}" for m in ms if not isinstance(m, dict)
+                or not m.get("name")]
+    try:
+        found, _ = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt, validator=audit_check,
+                               images=[p for _, p in sheets], retries=1)
+    except Exception as exc:
+        entry["result"] = f"audit failed, kept the model: {exc}"[:300]
+        return massing, entry
+    missing = [m for m in found["missing"] if isinstance(m, dict)][:AUDIT_MAX]
+    entry["differences"] = [f"missing: {m['name']} ({m.get('where', '')})"[:200] for m in missing]
+    if not missing:
+        entry["result"] = "no missing volume found"
+        return massing, entry
+    old_ids = {p["id"] for p in massing["parts"]}
+    names = [m["name"] for m in missing]
+    prompt2 = agent.AUDIT_REVISE_PROMPT.format(
+        massing=json.dumps({"parts": massing["parts"], "materials": massing.get("materials", {}),
+                            "volumes": massing.get("volumes", [])}, ensure_ascii=False),
+        missing="\n".join(f"- {m['name']}: {m.get('where', '')} (photos {m.get('seen_in', '')})" for m in missing))
+    prompt2 += agent.user_directive(st)
+
+    def revise_check(o):
+        errs = check(o)
+        vols = {v.get("name"): v.get("part") for v in o.get("volumes") or [] if isinstance(v, dict)}
+        ids = {p.get("id") for p in o.get("parts") or [] if isinstance(p, dict)}
+        for n in names:
+            pid = vols.get(n)
+            if pid is None:
+                errs.append(f'the missing volume "{n}" must be in "volumes" (same name) with its own part')
+            elif pid not in ids or pid in old_ids:
+                errs.append(f'volume "{n}" needs a NEW part (not one of the existing parts), present in "parts"')
+        return errs
+    try:
+        obj, res = ai.ask_json(provider, agent.MASSING_SYSTEM, prompt2, validator=revise_check,
+                               images=[p for _, p in sheets], retries=2, repair=repair_answer)
+    except Exception as exc:
+        entry["result"] = f"adding the missing volumes failed, kept the model: {exc}"[:300]
+        return massing, entry
+    obj["views"] = massing.get("views")
+    obj["volumes"] = inventory_mod.merged(massing.get("volumes"), obj)
+    added = sorted({p["id"] for p in obj["parts"]} - old_ids)
+    entry.update({"result": f"added {len(added)} part(s): {', '.join(added)}", "verdict": "volumes added"})
+    prj.log("volume audit", {"missing": names, "added": added})
+    return obj, entry
 
 
 def select_best(prj: Project, provider, candidates: list, photos: list, sat, main, base_materials: dict, st: dict,

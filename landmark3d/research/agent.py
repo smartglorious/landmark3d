@@ -182,6 +182,30 @@ Reply with one JSON object:
 {{"matches": [{{"photo": 1, "label": "A".."H", "elevation": "street|raised|aerial", "subject": "whole|<part id>",
   "frame": [left, top, right, bottom], "why": "..."}}, ...]}}"""
 
+AUDIT_PROMPT = """Landmark: {name}. Each attached image is a reference photo ({photos}) with the current 3D model of
+the building drawn over it (half transparent, cyan outline), seen from the photo's viewpoint and scaled into the
+building's frame. The model's volumes so far: {inventory}. Parts: {parts}.
+
+List the volumes of the REAL building that the model does not have: wherever the real building sticks out of the
+cyan outline, or a distinct volume (its own roof or wall plane: a transept end, side chapels, a lower aisle, a
+sacristy, a porch, an apse chapel, a belfry stage, a gable, a pavilion, a wing) is covered by one big model block.
+Look photo by photo, from left to right. Ignore trees, vehicles, people, scaffolding and neighbouring buildings, and
+small details (windows, ornaments) - only volumes. At most {most}.
+Reply with one JSON object:
+{{"missing": [{{"name": "...", "seen_in": [photo numbers], "where": "position in the photo and size relative to the
+  building"}}, ...]}}   (an empty list when every volume is there)"""
+
+AUDIT_REVISE_PROMPT = """This is the current massing model (same schema and hard rules as before):
+{massing}
+
+The attached images show it drawn over the reference photos (cyan outline). These volumes of the real building are
+missing from it:
+{missing}
+
+Add a part for EACH missing volume (sized and placed from the photos and the overlays), list each in "volumes" with
+exactly the name given above and its new part id, and keep every existing part (you may adjust them so the new ones
+fit). Reply with the COMPLETE model: {{"volumes": [...], "parts": [...], "materials": {{...}}, "notes": ["..."]}}"""
+
 AZIMUTH_PROMPT = """Each of the {n} attached images belongs to one reference photo ({photos}, in that order) and
 shows that photo {count} times, numbered 1 .. {count}, with a simplified model of the building drawn over it (cyan
 outline) from slightly different directions around the building (1 and {count} are 30 degrees either way from 3).
