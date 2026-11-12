@@ -182,6 +182,21 @@ Reply with one JSON object:
 {{"matches": [{{"photo": 1, "label": "A".."H", "elevation": "street|raised|aerial", "subject": "whole|<part id>",
   "frame": [left, top, right, bottom], "why": "..."}}, ...]}}"""
 
+ROOFPLAN_PROMPT = """Landmark: {name}. The FIRST attached image is a satellite plan view of the building, north up,
+zoomed, with a grid in the model's local metres (x east, y north; yellow labels every 10 m, faint lines every 5 m)
+and the measured site outline in yellow: {site}. The other images are street photos of the same building.
+
+Trace every ROOF VOLUME of the building as seen from above: every piece with its own roof (each ridge roof, hip
+roof, apse or chevet with its radiating chapels, transept arm, lower side aisle or chapel roofs along the sides,
+tower top, porch, annex). A building of this kind usually has many: do not merge roofs at different heights or with
+different ridges into one polygon. Where scaffolding, trees or shadow hide a part, use the photos and the yellow
+outline to complete it. Polygons in local metres, corners in order, following the roof edges (eaves).
+For each give the roof form ({forms}) and its level: "low" (side chapels, aisles), "main" (nave, transept, hall),
+"high" (raised parts) or "tower".
+Reply with one JSON object:
+{{"volumes": [{{"name": "...", "polygon": [[x, y], ...], "roof": "...", "level": "low|main|high|tower"}}, ...],
+  "notes": ["..."]}}"""
+
 AUDIT_PROMPT = """Landmark: {name}. Each attached image is a reference photo ({photos}) with the current 3D model of
 the building drawn over it (half transparent, cyan outline), seen from the photo's viewpoint and scaled into the
 building's frame. The model's volumes so far: {inventory}. Parts: {parts}.

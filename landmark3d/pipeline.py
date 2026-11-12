@@ -216,6 +216,15 @@ def build_spec(prj: Project) -> dict:
             facts=json.dumps({k: v.get("value") for k, v in facts.items()}, ensure_ascii=False),
             notes=json.dumps(notes + [st.get("notes", "")], ensure_ascii=False), satellite_note=sat_note)
         prompt += agent.user_directive(st, notes=False)
+        # the roof volumes traced on the satellite plan view: a plan without perspective fixes how many volumes there
+        # are and where; the massing must give each a part of its own
+        from . import roofplan
+        roof_vols, roof_entry = (roofplan.trace(prj, provider, main, photos, st)
+                                 if settings_mod.load().get("roof_plan", True) else ([], {"step": "roof_plan",
+                                                                                          "result": "off"}))
+        review_log.append(roof_entry)
+        if roof_vols:
+            prompt += "\n\n" + roofplan.prompt_section(roof_vols)
         from . import inventory as inventory_mod
         inv = {"list": None}          # the volume inventory of the first answer; later answers must keep it
         try:
@@ -228,6 +237,7 @@ def build_spec(prj: Project) -> dict:
                 from . import exposure
                 vol = (inventory_mod.first_errors(obj) if inv["list"] is None
                        else inventory_mod.coverage_errors(obj["parts"], inv["list"]))
+                vol += roofplan.match_errors(obj["parts"], roof_vols, main) if roof_vols else []
                 return (vol + material_errors(obj, int(st["budgets"].get("materials_max", 10)))
                         + orientation_errors(obj["parts"], main)
                         + spec_mod.structure_errors(obj["parts"] + parts[1:], main, facts)
